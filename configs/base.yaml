@@ -1,0 +1,65 @@
+model:
+  base_model_name: "Qwen/Qwen3-VL-8B-Instruct"
+  full_model_name: "Qwen/Qwen3-VL-8B-Thinking"
+  use_thinking_for_full: false
+  trust_remote_code: true
+  torch_dtype: "bfloat16"
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+  freeze_vision_encoder: true
+
+policy:
+  vow_hidden_dim: 256
+  gumbel_tau: 1.0
+  use_straight_through: true
+  eval_sample: false
+  cost_c1: 1.0
+  cost_c2: 4.0
+  lambda_cost: 0.1
+  calibration_lambda: 0.0
+
+vision_budget:
+  coarse_long_side: 336
+  full_long_side: 672
+  coarse_max_pixels: 112896
+  full_max_pixels: 451584
+  patch_size: 14
+  token_cap: null
+
+data:
+  train_jsonl: null
+  eval_jsonl: null
+  hf_dataset_name: null
+  hf_dataset_split: "train"
+  text_field: "question"
+  answer_field: "answer"
+  image_field: "image"
+  prompt_template: "Question: {question}\nAnswer:"
+  max_samples: null
+
+training:
+  output_dir: "outputs"
+  per_device_batch_size: 1
+  gradient_accumulation: 4
+  epochs: 1
+  lr: 5e-5
+  weight_decay: 0.0
+  warmup_steps: 0
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  log_every: 10
+  save_every: 500
+  deepspeed_stage: 2
+  use_fsdp: false
+  gradient_checkpointing: false
+  seed: 42
+
+eval:
+  batch_size: 1
+  max_new_tokens: 32
+  num_beams: 1
+  do_sample: false
+  temperature: 1.0

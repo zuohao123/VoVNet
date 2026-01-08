@@ -1,0 +1,12 @@
+# Overrides for VQA-style training
+
+data:
+  train_jsonl: "data/train_vqa.jsonl"
+  eval_jsonl: "data/val_vqa.jsonl"
+  prompt_template: "Question: {question}\nAnswer:"
+
+training:
+  epochs: 2
+  per_device_batch_size: 2
+  gradient_accumulation: 2
+  deepspeed_stage: 2

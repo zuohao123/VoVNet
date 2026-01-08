@@ -1,0 +1,12 @@
+# Overrides for instruction-style training
+
+data:
+  train_jsonl: "data/train_instruct.jsonl"
+  eval_jsonl: "data/val_instruct.jsonl"
+  prompt_template: "User: {question}\nAssistant:"
+
+training:
+  epochs: 2
+  per_device_batch_size: 1
+  gradient_accumulation: 4
+  deepspeed_stage: 3

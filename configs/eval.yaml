@@ -1,0 +1,11 @@
+# Overrides for evaluation
+
+data:
+  eval_jsonl: "data/val_vqa.jsonl"
+
+eval:
+  batch_size: 1
+  max_new_tokens: 32
+  num_beams: 1
+  do_sample: false
+  temperature: 1.0

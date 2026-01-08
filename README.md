@@ -1,0 +1,85 @@
+# Value-of-Vision (VoVNet)
+
+Research repository for cost-aware, uncertainty-aware vision calling on top of Qwen3-VL-8B.
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Data format
+
+JSONL entries:
+
+```json
+{"image": "path/to/image.jpg", "question": "...", "answer": "...", "id": "123", "meta": {"source": "toy"}}
+```
+
+Fields are configurable in `configs/*.yaml`.
+
+## Training (ZeRO-2 / ZeRO-3)
+
+1) Edit configs:
+- `configs/base.yaml` for defaults
+- `configs/train_vqa.yaml` or `configs/train_instruct.yaml` for overrides
+
+2) Launch training:
+
+```bash
+python scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+```
+
+DeepSpeed configs are auto-generated into `outputs/deepspeed_config.json`.
+
+For multi-GPU runs, use accelerate:
+
+```bash
+accelerate launch --num_processes 8 scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+```
+
+## Running baselines
+
+```bash
+python scripts/run_baselines.py --config configs/base.yaml --config configs/eval.yaml
+```
+
+Outputs: `outputs/baselines.json`
+
+## Evaluation & Pareto
+
+```bash
+python scripts/eval.py --config configs/base.yaml --config configs/eval.yaml
+python scripts/reproduce_paper.py --config configs/base.yaml --config configs/eval.yaml
+```
+
+Pareto sweep outputs: `outputs/repro/pareto.json`
+
+## Latency profiling
+
+```bash
+python scripts/profile_latency.py --config configs/base.yaml --config configs/eval.yaml
+```
+
+Outputs: `outputs/latency.json`
+
+## Reproduce paper results
+
+```bash
+python scripts/reproduce_paper.py --config configs/base.yaml --config configs/eval.yaml
+```
+
+Outputs:
+- `outputs/repro/vovnet.json`
+- `outputs/repro/baselines.json`
+- `outputs/repro/pareto.json`
+- `outputs/repro/tables.csv`
+
+## Notes
+
+- The code uses LoRA by default and freezes the vision encoder unless configured otherwise.
+- Qwen3-VL loaders use conservative fallbacks with `trust_remote_code` configurable.
+- The vision budget controller resizes images for coarse vs full fidelity.
+- For toy data, create a small JSONL and run training with a single epoch.
