@@ -77,6 +77,37 @@ Outputs:
 - `outputs/repro/pareto.json`
 - `outputs/repro/tables.csv`
 
+## Dataset preparation
+
+Prepare a dataset into the unified JSONL schema:
+
+```bash
+python scripts/prepare_dataset.py --dataset vqa_v2 --subset vqa_v2 --splits train,validation --download-images
+```
+
+Outputs go to `data/processed/<dataset>/` with optional images in `data/images/<dataset>/`.
+
+## Recommended dataset recipe
+
+The project includes a recipe file at `configs/data_recipe.yaml` that specifies:
+- train vs eval datasets
+- splits and max sample counts
+- fast_dev vs paper mode
+
+Run fast dev:
+
+```bash
+python scripts/prepare_all.py --mode fast_dev
+```
+
+Run paper mode:
+
+```bash
+python scripts/prepare_all.py --mode paper
+```
+
+Outputs and a manifest are written to `data/processed/manifest.json`.
+
 ## Notes
 
 - The code uses LoRA by default and freezes the vision encoder unless configured otherwise.

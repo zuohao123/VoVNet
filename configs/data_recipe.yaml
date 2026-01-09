@@ -1,0 +1,124 @@
+mode: paper
+output_root: data/processed
+download_images_default: false
+schema_version: v1
+seed: 42
+val_ratio_default: 0.03
+
+datasets:
+  - name: llava_instruct_150k
+    role: train
+    splits: [train, val]
+    val_from_train: true
+    val_ratio: 0.03
+    max_samples_by_split:
+      train:
+        fast_dev: 5000
+        paper: 150000
+      val:
+        fast_dev: 1000
+        paper: 5000
+    download_images: false
+    notes: "LLaVA-Instruct-150K; if no official val, split from train."
+
+  - name: open_orca
+    role: train
+    splits: [train, val]
+    val_from_train: true
+    val_ratio: 0.03
+    max_samples_by_split:
+      train:
+        fast_dev: 5000
+        paper: 50000
+      val:
+        fast_dev: 1000
+        paper: 2000
+    download_images: false
+    notes: "Text-only instruction data to teach NO_VISION behavior."
+
+  - name: textvqa
+    role: train_optional
+    modes: [paper]
+    splits: [train, validation]
+    max_samples_by_split:
+      train:
+        fast_dev: 1000
+        paper: 10000
+      validation:
+        fast_dev: 500
+        paper: 2000
+    download_images: false
+    notes: "Vision-mandatory add-on for policy calibration."
+
+  - name: vqa_v2
+    role: eval
+    subset: vqa_v2
+    splits: [validation]
+    max_samples_by_split:
+      validation:
+        fast_dev: 1000
+        paper: 20000
+    notes: "Eval-only generalization set."
+
+  - name: gqa
+    role: eval
+    splits: [validation]
+    max_samples_by_split:
+      validation:
+        fast_dev: 1000
+        paper: 10000
+    notes: "Eval-only generalization set."
+
+  - name: vizwiz
+    role: eval
+    splits: [validation]
+    max_samples_by_split:
+      validation:
+        fast_dev: 1000
+        paper: 5000
+    notes: "Eval-only generalization set."
+
+  - name: textvqa
+    role: eval
+    splits: [validation]
+    max_samples_by_split:
+      validation:
+        fast_dev: 1000
+        paper: 5000
+    notes: "Eval-only; ensure vision-required dataset is included."
+
+  - name: mmbench
+    role: eval
+    splits: [test]
+    max_samples_by_split:
+      test:
+        fast_dev: 1000
+        paper: 5000
+    notes: "If not on HF, adapter is stub."
+
+  - name: mmmu_pro
+    role: eval
+    splits: [test]
+    max_samples_by_split:
+      test:
+        fast_dev: 1000
+        paper: 2000
+    notes: "If not on HF, adapter is stub."
+
+  - name: mathvista
+    role: eval
+    splits: [test]
+    max_samples_by_split:
+      test:
+        fast_dev: 1000
+        paper: 2000
+    notes: "If not on HF, adapter is stub."
+
+  - name: seed_bench
+    role: eval
+    splits: [test]
+    max_samples_by_split:
+      test:
+        fast_dev: 1000
+        paper: 2000
+    notes: "If not on HF, adapter is stub."

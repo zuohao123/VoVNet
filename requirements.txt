@@ -8,3 +8,6 @@ pyyaml
 pillow
 numpy
 pytest
+huggingface_hub
+tqdm
+pyarrow
