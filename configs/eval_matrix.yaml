@@ -1,0 +1,22 @@
+defaults:
+  prompt_template: "Question: {question}\nAnswer:"
+  metric: "exact_match"
+  text_field: "question"
+  answer_field: "answer"
+  image_field: "image"
+  max_samples: null
+
+datasets:
+  - name: "vqa_v2"
+    source: "jsonl"
+    jsonl: "data/processed/vqa_v2/vqa_v2_validation.jsonl"
+    metric: "exact_match"
+  - name: "gqa"
+    source: "jsonl"
+    jsonl: "data/processed/gqa/gqa_validation.jsonl"
+    metric: "exact_match"
+  - name: "textvqa"
+    source: "jsonl"
+    jsonl: "data/processed/textvqa/textvqa_validation.jsonl"
+    prompt_template: "Question: {question}\nAnswer:"
+    metric: "exact_match"

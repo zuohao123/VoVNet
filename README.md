@@ -33,6 +33,9 @@ python scripts/train.py --config configs/base.yaml --config configs/train_vqa.ya
 ```
 
 DeepSpeed configs are auto-generated into `outputs/deepspeed_config.json`.
+Training runs also write reproducibility metadata to:
+- `outputs/run_metadata_train.json`
+- `outputs/configs/` (copied config files)
 
 For multi-GPU runs, use accelerate:
 
@@ -56,6 +59,12 @@ python scripts/reproduce_paper.py --config configs/base.yaml --config configs/ev
 ```
 
 Pareto sweep outputs: `outputs/repro/pareto.json`
+Matrix evaluation outputs:
+- `outputs/summary.json`
+- `outputs/results.csv`
+- `outputs/eval_matrix.json`
+- `outputs/eval_matrix.csv`
+- `outputs/run_metadata_eval.json`
 
 ## Latency profiling
 
@@ -66,6 +75,8 @@ python scripts/profile_latency.py --config configs/base.yaml --config configs/ev
 Outputs: `outputs/latency.json`
 
 ## Reproduce paper results
+
+One command for the main table + Pareto curve:
 
 ```bash
 python scripts/reproduce_paper.py --config configs/base.yaml --config configs/eval.yaml

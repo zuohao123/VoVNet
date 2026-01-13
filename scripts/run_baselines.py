@@ -79,6 +79,11 @@ def build_model(cfg: Config) -> VoVNet:
         gumbel_tau=cfg.policy.gumbel_tau,
         use_straight_through=cfg.policy.use_straight_through,
         eval_sample=cfg.policy.eval_sample,
+        policy_mode=cfg.policy.policy_mode,
+        fallback_mode=cfg.policy.fallback_mode,
+        fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
+        fallback_margin_threshold=cfg.policy.fallback_margin_threshold,
+        cost_scale=cfg.policy.cost_scale,
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )

@@ -88,6 +88,11 @@ def build_model(cfg: Config) -> VoVNet:
         gumbel_tau=cfg.policy.gumbel_tau,
         use_straight_through=cfg.policy.use_straight_through,
         eval_sample=cfg.policy.eval_sample,
+        policy_mode=cfg.policy.policy_mode,
+        fallback_mode=cfg.policy.fallback_mode,
+        fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
+        fallback_margin_threshold=cfg.policy.fallback_margin_threshold,
+        cost_scale=cfg.policy.cost_scale,
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )
@@ -143,10 +148,18 @@ def evaluate_policy_with_cost_weight(
     tokenizer = model.base_vlm.tokenizer
     with torch.no_grad():
         for batch in loader:
-            _, action_logits = model.text_first(
+            _, action_logits, _ = model.text_first(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
             )
-            adjusted_logits = action_logits - cost_weight * model.costs.to(action_logits.device)
+            token_count_coarse, token_count_full, _, _ = model._prepare_token_counts(
+                images=batch.get("images"),
+                device=action_logits.device,
+                batch_size=batch["input_ids"].size(0),
+            )
+            zeros = torch.zeros_like(token_count_coarse)
+            costs = torch.stack([zeros, token_count_coarse, token_count_full], dim=-1)
+            costs = costs * float(model.cost_scale)
+            adjusted_logits = action_logits - cost_weight * costs
             actions = adjusted_logits.argmax(dim=-1)
 
             outputs = model.forward_with_actions(

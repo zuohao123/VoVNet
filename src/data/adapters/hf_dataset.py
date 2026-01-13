@@ -14,6 +14,7 @@ class HFDatasetAdapter(Dataset):
         self,
         dataset_name: str,
         split: str,
+        subset: Optional[str] = None,
         text_field: str = "question",
         answer_field: str = "answer",
         image_field: str = "image",
@@ -24,7 +25,10 @@ class HFDatasetAdapter(Dataset):
         except Exception as exc:  # pragma: no cover - import guard
             raise RuntimeError("datasets is required for HF dataset loading") from exc
 
-        self.dataset = load_dataset(dataset_name, split=split)
+        if subset:
+            self.dataset = load_dataset(dataset_name, subset, split=split)
+        else:
+            self.dataset = load_dataset(dataset_name, split=split)
         if max_samples is not None:
             self.dataset = self.dataset.select(range(max_samples))
 

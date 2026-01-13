@@ -16,10 +16,19 @@ policy:
   gumbel_tau: 1.0
   use_straight_through: true
   eval_sample: false
+  policy_mode: "logits"
+  fallback_mode: "none"
+  fallback_entropy_threshold: null
+  fallback_margin_threshold: null
+  cost_scale: 1.0
   cost_c1: 1.0
   cost_c2: 4.0
   lambda_cost: 0.1
   calibration_lambda: 0.0
+  gain_supervision: false
+  gain_loss_type: "mse"
+  gain_loss_weight: 0.0
+  gain_margin: 0.0
 
 vision_budget:
   coarse_long_side: 336
@@ -56,6 +65,7 @@ training:
   use_fsdp: false
   gradient_checkpointing: false
   seed: 42
+  profile: false
 
 eval:
   batch_size: 1
@@ -63,3 +73,4 @@ eval:
   num_beams: 1
   do_sample: false
   temperature: 1.0
+  profile: false

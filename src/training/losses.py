@@ -29,6 +29,39 @@ def compute_calibration_loss(calibration_value: Tensor, lambda_cal: float) -> Te
     return calibration_value * lambda_cal
 
 
+def compute_gain_loss(
+    gain_pred: Tensor | None,
+    gain_true: Tensor | None,
+    loss_type: str = "mse",
+    margin: float = 0.0,
+) -> Tensor:
+    """Compute gain regression or ranking loss."""
+    if gain_pred is None or gain_true is None:
+        device = gain_pred.device if gain_pred is not None else torch.device("cpu")
+        return torch.tensor(0.0, device=device)
+
+    if loss_type == "mse":
+        return F.mse_loss(gain_pred, gain_true)
+    if loss_type == "huber":
+        return F.smooth_l1_loss(gain_pred, gain_true)
+
+    delta_true = gain_true[:, 1] - gain_true[:, 0]
+    delta_pred = gain_pred[:, 1] - gain_pred[:, 0]
+    sign = torch.sign(delta_true)
+    valid = sign != 0
+    if valid.sum() == 0:
+        return torch.tensor(0.0, device=gain_pred.device)
+    sign = sign[valid]
+    delta_pred = delta_pred[valid]
+
+    if loss_type == "rank_hinge":
+        return F.relu(margin - sign * delta_pred).mean()
+    if loss_type == "rank_logistic":
+        return F.softplus(-sign * delta_pred).mean()
+
+    raise ValueError(f"Unknown gain loss type: {loss_type}")
+
+
 def compute_total_loss(
     logits: Tensor,
     labels: Tensor | None,
@@ -36,6 +69,11 @@ def compute_total_loss(
     lambda_cost: float,
     calibration_value: Tensor | None = None,
     lambda_cal: float = 0.0,
+    gain_pred: Tensor | None = None,
+    gain_true: Tensor | None = None,
+    gain_loss_type: str = "mse",
+    lambda_gain: float = 0.0,
+    gain_margin: float = 0.0,
 ) -> Dict[str, Tensor]:
     """Compute combined losses."""
     task_loss = compute_task_loss(logits, labels)
@@ -45,10 +83,17 @@ def compute_total_loss(
         if calibration_value is not None
         else torch.tensor(0.0, device=logits.device)
     )
-    total_loss = task_loss + cost_loss + cal_loss
+    gain_loss = compute_gain_loss(
+        gain_pred=gain_pred,
+        gain_true=gain_true,
+        loss_type=gain_loss_type,
+        margin=gain_margin,
+    )
+    total_loss = task_loss + cost_loss + cal_loss + lambda_gain * gain_loss
     return {
         "total_loss": total_loss,
         "task_loss": task_loss,
         "cost_loss": cost_loss,
         "calibration_loss": cal_loss,
+        "gain_loss": gain_loss,
     }

@@ -35,10 +35,19 @@ class PolicyConfig:
     gumbel_tau: float = 1.0
     use_straight_through: bool = True
     eval_sample: bool = False
+    policy_mode: str = "logits"
+    fallback_mode: str = "none"
+    fallback_entropy_threshold: float | None = None
+    fallback_margin_threshold: float | None = None
+    cost_scale: float = 1.0
     cost_c1: float = 1.0
     cost_c2: float = 4.0
     lambda_cost: float = 0.1
     calibration_lambda: float = 0.0
+    gain_supervision: bool = False
+    gain_loss_type: str = "mse"
+    gain_loss_weight: float = 0.0
+    gain_margin: float = 0.0
 
 
 @dataclass
@@ -87,6 +96,7 @@ class TrainingConfig:
     use_fsdp: bool = False
     gradient_checkpointing: bool = False
     seed: int = 42
+    profile: bool = False
 
 
 @dataclass
@@ -98,6 +108,7 @@ class EvalConfig:
     num_beams: int = 1
     do_sample: bool = False
     temperature: float = 1.0
+    profile: bool = False
 
 
 @dataclass
@@ -131,10 +142,19 @@ class Config:
         self._validate()
 
     def _validate(self) -> None:
-        if self.policy.cost_c2 <= self.policy.cost_c1:
-            raise ValueError("cost_c2 must be greater than cost_c1")
         if self.training.deepspeed_stage not in (0, 2, 3):
             raise ValueError("deepspeed_stage must be 0, 2, or 3")
+        if self.policy.policy_mode not in ("logits", "gain"):
+            raise ValueError("policy_mode must be logits or gain")
+        if self.policy.fallback_mode not in ("none", "coarse", "full"):
+            raise ValueError("fallback_mode must be none, coarse, or full")
+        if self.policy.gain_loss_type not in (
+            "mse",
+            "huber",
+            "rank_hinge",
+            "rank_logistic",
+        ):
+            raise ValueError("gain_loss_type must be mse, huber, rank_hinge, rank_logistic")
 
 
 def _update_dataclass(obj: Any, updates: Dict[str, Any]) -> None:

@@ -20,6 +20,7 @@ from src.training.fsdp_utils import build_fsdp_plugin
 from src.training.schedulers import build_scheduler
 from src.training.trainer import Trainer
 from src.utils.logging import setup_logging
+from src.utils.run_metadata import collect_dataset_metadata, write_run_metadata
 from src.utils.seed import set_seed
 
 logger = setup_logging(__name__)
@@ -146,6 +147,11 @@ def build_model(cfg: Config) -> VoVNet:
         gumbel_tau=cfg.policy.gumbel_tau,
         use_straight_through=cfg.policy.use_straight_through,
         eval_sample=cfg.policy.eval_sample,
+        policy_mode=cfg.policy.policy_mode,
+        fallback_mode=cfg.policy.fallback_mode,
+        fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
+        fallback_margin_threshold=cfg.policy.fallback_margin_threshold,
+        cost_scale=cfg.policy.cost_scale,
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )
@@ -190,6 +196,39 @@ def main() -> None:
     )
 
     accelerator = build_accelerator(cfg, output_dir)
+    if accelerator.is_main_process:
+        dataset_meta: dict[str, Any] = {}
+        dataset_meta["train"] = collect_dataset_metadata(
+            train_dataset,
+            {
+                "split": "train",
+                "source": "jsonl" if cfg.data.train_jsonl else "hf",
+                "jsonl": cfg.data.train_jsonl,
+                "hf_dataset_name": cfg.data.hf_dataset_name,
+                "hf_dataset_split": cfg.data.hf_dataset_split,
+                "max_samples": cfg.data.max_samples,
+            },
+        )
+        if eval_dataset is not None:
+            dataset_meta["eval"] = collect_dataset_metadata(
+                eval_dataset,
+                {
+                    "split": "eval",
+                    "source": "jsonl" if cfg.data.eval_jsonl else "hf",
+                    "jsonl": cfg.data.eval_jsonl,
+                    "hf_dataset_name": cfg.data.hf_dataset_name,
+                    "hf_dataset_split": cfg.data.hf_dataset_split,
+                    "max_samples": cfg.data.max_samples,
+                },
+            )
+        write_run_metadata(
+            output_dir=output_dir,
+            stage="train",
+            cfg=cfg,
+            config_paths=args.config,
+            datasets=dataset_meta,
+            extra={"output_dir": str(output_dir)},
+        )
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -221,6 +260,12 @@ def main() -> None:
         log_every=cfg.training.log_every,
         save_every=cfg.training.save_every,
         max_grad_norm=cfg.training.max_grad_norm,
+        profile_train=cfg.training.profile,
+        profile_eval=cfg.eval.profile,
+        gain_supervision=cfg.policy.gain_supervision,
+        gain_loss_type=cfg.policy.gain_loss_type,
+        gain_loss_weight=cfg.policy.gain_loss_weight,
+        gain_margin=cfg.policy.gain_margin,
     )
     trainer.train(cfg.training.epochs)
 

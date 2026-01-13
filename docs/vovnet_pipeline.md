@@ -18,6 +18,16 @@
 - `expected_cost`: `Tensor[B]`，期望成本（用 action_probs 与成本向量加权）。
 - `uncertainty`: `Tensor[B]`，不确定性（基于文本 logits 的熵）。
 - `vision_tokens`: `Tensor[B]`，视觉 token 数估计。
+- `token_count_coarse`: `Tensor[B]`，COARSE 视觉 token 数（基于预处理/视觉 tokenizer）。
+- `token_count_full`: `Tensor[B]`，FULL 视觉 token 数（基于预处理/视觉 tokenizer）。
+- `gain_pred`: `Tensor[B, 2]`，预测的 (coarse_gain, full_gain)，用于 VoV 回归/排序训练。
+- `gain_true`: `Tensor[B, 2]`，反事实 gain（loss_no - loss_vision），仅在训练/开启计算时返回。
+- `actions_raw`: `Tensor[B]`，策略原始动作（回退前）。
+- `fallback_mask`: `Tensor[B]`，回退触发标记。
+- `fallback_entropy_trigger`: `Tensor[B]`，因熵阈值触发的样本标记。
+- `fallback_margin_trigger`: `Tensor[B]`，因 margin 阈值触发的样本标记。
+- `margin`: `Tensor[B]`，文本 logits 的 top1-top2 概率差。
+- `text_logits`: `Tensor[B, T, V]`，文本前向 logits（用于回退前基线评估）。
 - `labels`: 原样透传。
 
 ## 2. 模块结构（关键组件）
@@ -34,7 +44,7 @@
 1. 调用 `base_vlm.encode_text`，仅输入文本。
 2. 取最后一层隐藏状态 `hidden_states[-1]`，按 `attention_mask` 做均值池化。
 3. 经过 `vow_head` 得到 `vow_features`。
-4. 通过 `policy` 输出 `action_logits`。
+4. 通过 `policy` 或 `gain_head` 输出 `action_logits`（支持 gain→logits 映射）。
 
 ### Step 2：动作选择（`_select_actions`）
 - **训练时**：
@@ -45,9 +55,15 @@
 
 输出 `action_probs` 和 `actions`。
 
+### Step 2.5：评估回退（Fallback）
+- 若策略输出 **NO_VISION** 且文本不确定性过高：
+  - `entropy > t` 或 `margin < t2`
+  - 按配置自动升级为 **COARSE** 或 **FULL**
+- 输出 `actions_raw`（回退前）与 `actions`（回退后），并记录触发条件统计。
+
 ### Step 3：不确定性与成本估计
 - **不确定性**：使用文本 logits 最后一 token 的熵 `entropy_from_logits`。
-- **期望成本**：`expected_cost = sum(action_probs * [0, c1, c2])`。
+- **期望成本**：`expected_cost = cost_scale * (p1*token_count_coarse + p2*token_count_full)`。
 
 ### Step 4：条件视觉调用
 - 若 **训练且 `use_straight_through=False`**：走软混合（`_forward_soft_mixture`）。
@@ -118,7 +134,7 @@ return {logits, action_logits, action_probs, actions,
 - `a1 = COARSE_VISION`，成本 `c1`
 - `a2 = FULL_VISION`，成本 `c2`
 
-成本通过 `action_probs` 加权形成 `expected_cost`，作为训练的 cost loss 组成部分。
+成本通过 `action_probs` 与真实视觉 token 数加权形成 `expected_cost`，作为训练的 cost loss 组成部分。
 
 ## 7. 与训练/评估的交互关系（简述）
 
