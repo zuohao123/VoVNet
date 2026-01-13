@@ -10,6 +10,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+如服务器上没有 venv 模块或希望使用 conda，可用 Miniconda 创建隔离环境：
+
+```bash
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/miniconda
+/opt/miniconda/bin/conda init bash
+source ~/.bashrc
+conda create -n vovnet python=3.10 -y
+conda activate vovnet
+pip install -r requirements.txt
+```
+
 如服务器无外网或需离线：
 - 将模型权重按本地路径放置（见第 2 节）
 - 如需访问 HuggingFace 数据集，请确保网络权限或提前下载缓存
