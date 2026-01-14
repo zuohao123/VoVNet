@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import sysconfig
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Generator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _swap_datasets_module(hf_module: Any) -> Generator[None, None, None]:
+    previous = sys.modules.get("datasets")
+    sys.modules["datasets"] = hf_module
+    try:
+        yield
+    finally:
+        if previous is not None:
+            sys.modules["datasets"] = previous
+        else:
+            sys.modules.pop("datasets", None)
 
 
 def _load_from_paths(search_paths: Sequence[str]) -> Any:
@@ -19,7 +34,8 @@ def _load_from_paths(search_paths: Sequence[str]) -> Any:
     if spec is None or spec.loader is None:
         raise RuntimeError("HuggingFace datasets not installed")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with _swap_datasets_module(module):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -103,9 +119,10 @@ def safe_load_dataset(dataset_id: str, subset: Optional[str], split: str) -> Any
     hf_datasets = import_hf_datasets()
 
     def _load() -> Any:
-        if subset:
-            return hf_datasets.load_dataset(dataset_id, subset, split=split)
-        return hf_datasets.load_dataset(dataset_id, split=split)
+        with _swap_datasets_module(hf_datasets):
+            if subset:
+                return hf_datasets.load_dataset(dataset_id, subset, split=split)
+            return hf_datasets.load_dataset(dataset_id, split=split)
 
     try:
         return retry(_load, retries=3, base_delay=1.0)
