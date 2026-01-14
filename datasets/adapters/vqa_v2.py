@@ -19,11 +19,13 @@ from ..common import (
 class VQAv2Adapter(HFAdapterBase):
     """VQA v2 adapter.
 
-    Notes: Available on HF as "vqa" with config "vqa_v2". Some splits may be gated.
+    Notes: Common HF ids include "HuggingFaceM4/VQAv2" or "vqa" with config "vqa_v2".
+    Override via VOVNET_HF_DATASET_ID_VQA_V2 if needed.
     """
 
     name = "vqa_v2"
-    hf_dataset_id = "vqa"
+    hf_dataset_id = "HuggingFaceM4/VQAv2"
+    hf_dataset_id_candidates = ["HuggingFaceM4/VQAv2", "vqa"]
     default_subset = "vqa_v2"
     task_type = "vqa"
 

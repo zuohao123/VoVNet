@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import logging
+import os
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +11,8 @@ from PIL import Image
 
 from .hf_utils import safe_load_dataset
 from .image_utils import image_to_jpeg_bytes, load_image_from_path, load_image_from_url, sha1_bytes
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ImageInfo:
@@ -111,19 +115,46 @@ class HFAdapterBase:
 
     name: str
     hf_dataset_id: Optional[str]
+    hf_dataset_id_candidates: Optional[List[str]] = None
     default_subset: Optional[str] = None
 
     def __init__(self) -> None:
         if not self.hf_dataset_id:
             raise ValueError("hf_dataset_id must be set for HF adapters")
 
+    def _candidate_dataset_ids(self) -> List[str]:
+        env_key = f"VOVNET_HF_DATASET_ID_{self.name.upper()}"
+        override = os.environ.get(env_key) or os.environ.get("VOVNET_HF_DATASET_ID")
+        if override:
+            return [override]
+        if self.hf_dataset_id_candidates:
+            return list(self.hf_dataset_id_candidates)
+        return [self.hf_dataset_id]
+
     def load(self, subset: Optional[str], split: str) -> Any:
-        if subset is None and self.default_subset is not None:
+        last_exc: Optional[Exception] = None
+        for dataset_id in self._candidate_dataset_ids():
             try:
-                return safe_load_dataset(self.hf_dataset_id, self.default_subset, split)
-            except Exception:
-                pass
-        return safe_load_dataset(self.hf_dataset_id, subset, split)
+                if subset is None and self.default_subset is not None:
+                    try:
+                        return safe_load_dataset(dataset_id, self.default_subset, split)
+                    except Exception:
+                        pass
+                return safe_load_dataset(dataset_id, subset, split)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Failed to load dataset %s with id=%s (subset=%s, split=%s): %s",
+                    self.name,
+                    dataset_id,
+                    subset,
+                    split,
+                    exc,
+                )
+                continue
+        raise RuntimeError(
+            f"Failed to load dataset {self.name} with candidate ids {self._candidate_dataset_ids()}"
+        ) from last_exc
 
     def smoke_test(self) -> Tuple[bool, str]:
         try:

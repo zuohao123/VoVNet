@@ -19,11 +19,13 @@ from ..common import (
 class VizWizAdapter(HFAdapterBase):
     """VizWiz adapter.
 
-    Notes: Available on HF as "vizwiz". Some splits may be gated.
+    Notes: Common HF ids include "HuggingFaceM4/VizWiz" or "vizwiz".
+    Override via VOVNET_HF_DATASET_ID_VIZWIZ if needed.
     """
 
     name = "vizwiz"
-    hf_dataset_id = "vizwiz"
+    hf_dataset_id = "HuggingFaceM4/VizWiz"
+    hf_dataset_id_candidates = ["HuggingFaceM4/VizWiz", "vizwiz"]
     task_type = "vqa"
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:

@@ -52,13 +52,12 @@ datasets:
 
   - name: vqa_v2
     role: eval
-    subset: vqa_v2
     splits: [validation]
     max_samples_by_split:
       validation:
         fast_dev: 1000
         paper: 20000
-    notes: "Eval-only generalization set."
+    notes: "Eval-only generalization set. Override HF id via VOVNET_HF_DATASET_ID_VQA_V2 if needed."
 
   - name: gqa
     role: eval
@@ -67,7 +66,7 @@ datasets:
       validation:
         fast_dev: 1000
         paper: 10000
-    notes: "Eval-only generalization set."
+    notes: "Eval-only generalization set. Override HF id via VOVNET_HF_DATASET_ID_GQA if needed."
 
   - name: vizwiz
     role: eval
@@ -76,7 +75,7 @@ datasets:
       validation:
         fast_dev: 1000
         paper: 5000
-    notes: "Eval-only generalization set."
+    notes: "Eval-only generalization set. Override HF id via VOVNET_HF_DATASET_ID_VIZWIZ if needed."
 
   - name: textvqa
     role: eval
@@ -85,7 +84,7 @@ datasets:
       validation:
         fast_dev: 1000
         paper: 5000
-    notes: "Eval-only; ensure vision-required dataset is included."
+    notes: "Eval-only; ensure vision-required dataset is included. Override HF id via VOVNET_HF_DATASET_ID_TEXTVQA if needed."
 
   - name: mmbench
     role: eval

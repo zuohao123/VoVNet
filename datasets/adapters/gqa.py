@@ -11,11 +11,13 @@ from ..common import AnswerInfo, HFAdapterBase, MetaInfo, UnifiedExample, resolv
 class GQAAdapter(HFAdapterBase):
     """GQA adapter.
 
-    Notes: Available on HF as "gqa". Some subsets may exist.
+    Notes: Common HF ids include "HuggingFaceM4/GQA" or "gqa".
+    Override via VOVNET_HF_DATASET_ID_GQA if needed.
     """
 
     name = "gqa"
-    hf_dataset_id = "gqa"
+    hf_dataset_id = "HuggingFaceM4/GQA"
+    hf_dataset_id_candidates = ["HuggingFaceM4/GQA", "gqa"]
     task_type = "vqa"
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:

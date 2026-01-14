@@ -57,12 +57,11 @@ model:
 
 ### 3.1 单个数据集
 
-示例：VQA v2（建议显式指定 subset）
+示例：VQA v2（如数据集需要配置名，再显式指定 `--subset`）
 
 ```bash
 python scripts/prepare_dataset.py \
   --dataset vqa_v2 \
-  --subset vqa_v2 \
   --splits train,validation \
   --download-images \
   --max_samples 1000
@@ -75,10 +74,11 @@ python scripts/prepare_dataset.py \
 
 ### 3.2 批量数据集
 
+使用 `configs/data_recipe.yaml` 统一控制数据集列表与采样规模：
+
 ```bash
-python scripts/prepare_all.py \
-  --datasets vqa_v2,gqa,textvqa,vizwiz \
-  --splits train,validation
+python scripts/prepare_all.py --mode fast_dev
+python scripts/prepare_all.py --mode paper
 ```
 
 ### 3.3 常用参数说明
@@ -86,12 +86,21 @@ python scripts/prepare_all.py \
 - `--export-parquet`：额外导出 Parquet（需要 `pyarrow`）
 - `--max_samples`：抽样上限（便于快速验证）
 - `--subset`：HF 配置名（部分数据集必须指定）
+- `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_VQA_V2`）
 
-### 3.4 访问受限数据集
+### 3.4 访问受限数据集 / HF Token
 如遇到权限问题，请先登录：
 
 ```bash
 huggingface-cli login
+```
+
+或设置环境变量（仅对需要权限的数据集）：
+
+```bash
+export HF_TOKEN=你的token
+# 或
+export HUGGINGFACE_HUB_TOKEN=你的token
 ```
 
 若服务器无法联网，请在有网环境准备好缓存并拷贝到 `~/.cache/huggingface`。

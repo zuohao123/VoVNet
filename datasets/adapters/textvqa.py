@@ -19,11 +19,13 @@ from ..common import (
 class TextVQAAdapter(HFAdapterBase):
     """TextVQA adapter.
 
-    Notes: Available on HF as "textvqa". Includes OCR tokens in some configs.
+    Notes: Common HF ids include "facebook/textvqa" or "textvqa".
+    Override via VOVNET_HF_DATASET_ID_TEXTVQA if needed.
     """
 
     name = "textvqa"
-    hf_dataset_id = "textvqa"
+    hf_dataset_id = "facebook/textvqa"
+    hf_dataset_id_candidates = ["facebook/textvqa", "textvqa"]
     task_type = "ocr_vqa"
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:
