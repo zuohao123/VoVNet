@@ -11,12 +11,13 @@ from ..common import AnswerInfo, HFAdapterBase, MetaInfo, UnifiedExample, resolv
 class LLaVAInstructAdapter(HFAdapterBase):
     """LLaVA-Instruct-150K adapter.
 
-    Notes: Common HF dataset id is "liuhaotian/llava-instruct-150k".
+    Notes: Common HF dataset ids include "liuhaotian/LLaVA-Instruct-150K".
     If the dataset is gated or unavailable, use the official release.
     """
 
     name = "llava_instruct_150k"
-    hf_dataset_id = "liuhaotian/llava-instruct-150k"
+    hf_dataset_id = "liuhaotian/LLaVA-Instruct-150K"
+    hf_dataset_id_candidates = ["liuhaotian/LLaVA-Instruct-150K", "liuhaotian/llava-instruct-150k"]
     task_type = "instruct_vqa"
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:

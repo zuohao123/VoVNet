@@ -86,6 +86,7 @@ python scripts/prepare_all.py --mode paper
 - `--export-parquet`：额外导出 Parquet（需要 `pyarrow`）
 - `--max_samples`：抽样上限（便于快速验证）
 - `--subset`：HF 配置名（部分数据集必须指定）
+- `--streaming`：启用 HF streaming（适合超大数据集或生成失败时）
 - `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_VQA_V2`）
 
 ### 3.4 访问受限数据集 / HF Token

@@ -98,7 +98,7 @@ class DatasetAdapter(Protocol):
     name: str
     hf_dataset_id: Optional[str]
 
-    def load(self, subset: Optional[str], split: str) -> Any:  # datasets.Dataset
+    def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:  # datasets.Dataset
         ...
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:
@@ -131,16 +131,18 @@ class HFAdapterBase:
             return list(self.hf_dataset_id_candidates)
         return [self.hf_dataset_id]
 
-    def load(self, subset: Optional[str], split: str) -> Any:
+    def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:
         last_exc: Optional[Exception] = None
         for dataset_id in self._candidate_dataset_ids():
             try:
                 if subset is None and self.default_subset is not None:
                     try:
-                        return safe_load_dataset(dataset_id, self.default_subset, split)
+                        return safe_load_dataset(
+                            dataset_id, self.default_subset, split, streaming=streaming
+                        )
                     except Exception:
                         pass
-                return safe_load_dataset(dataset_id, subset, split)
+                return safe_load_dataset(dataset_id, subset, split, streaming=streaming)
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
@@ -172,7 +174,7 @@ class StubAdapter:
     hf_dataset_id: Optional[str] = None
     reason: str = "Dataset not available on HuggingFace."
 
-    def load(self, subset: Optional[str], split: str) -> Any:
+    def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:
         raise NotImplementedError(self.reason)
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:

@@ -114,15 +114,55 @@ def try_dataset_info(dataset_id: str) -> Optional[str]:
         return None
 
 
-def safe_load_dataset(dataset_id: str, subset: Optional[str], split: str) -> Any:
+def _get_env_token() -> Optional[str]:
+    return (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+        or os.environ.get("VOVNET_HF_TOKEN")
+    )
+
+
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def safe_load_dataset(
+    dataset_id: str,
+    subset: Optional[str],
+    split: str,
+    streaming: bool = False,
+) -> Any:
     """Load HF dataset with retries and helpful errors."""
     hf_datasets = import_hf_datasets()
+    token = _get_env_token()
+    trust_remote_code = _get_env_bool("VOVNET_HF_TRUST_REMOTE_CODE", default=False)
 
     def _load() -> Any:
+        kwargs: dict[str, Any] = {
+            "split": split,
+            "streaming": streaming,
+        }
+        if trust_remote_code:
+            kwargs["trust_remote_code"] = True
+        if token:
+            kwargs["token"] = token
         with _swap_datasets_module(hf_datasets):
             if subset:
-                return hf_datasets.load_dataset(dataset_id, subset, split=split)
-            return hf_datasets.load_dataset(dataset_id, split=split)
+                try:
+                    return hf_datasets.load_dataset(dataset_id, subset, **kwargs)
+                except TypeError:
+                    if "token" in kwargs:
+                        kwargs["use_auth_token"] = kwargs.pop("token")
+                    return hf_datasets.load_dataset(dataset_id, subset, **kwargs)
+            try:
+                return hf_datasets.load_dataset(dataset_id, **kwargs)
+            except TypeError:
+                if "token" in kwargs:
+                    kwargs["use_auth_token"] = kwargs.pop("token")
+                return hf_datasets.load_dataset(dataset_id, **kwargs)
 
     try:
         return retry(_load, retries=3, base_delay=1.0)

@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_proc", type=int, default=1)
+    parser.add_argument("--streaming", action="store_true")
     return parser.parse_args()
 
 
@@ -116,9 +117,12 @@ def prepare_split(
     max_samples: Optional[int],
     seed: int,
     export_parquet_flag: bool,
+    streaming: bool,
 ) -> None:
-    logger.info("Loading %s split=%s subset=%s", adapter.name, split, subset)
-    dataset = adapter.load(subset=subset, split=split)
+    logger.info(
+        "Loading %s split=%s subset=%s streaming=%s", adapter.name, split, subset, streaming
+    )
+    dataset = adapter.load(subset=subset, split=split, streaming=streaming)
     dataset = maybe_shuffle(dataset, seed=seed, max_samples=max_samples)
     try:
         total = len(dataset)
@@ -166,6 +170,7 @@ def main() -> None:
             max_samples=args.max_samples,
             seed=args.seed,
             export_parquet_flag=args.export_parquet,
+            streaming=args.streaming,
         )
 
 

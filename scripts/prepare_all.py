@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from datasets.exporters import export_jsonl, export_parquet
 from datasets.registry import get_adapter
-from scripts.prepare_dataset import iter_records
+from scripts.prepare_dataset import build_image_entry, iter_records
 
 logging.basicConfig(
     level=logging.INFO,
@@ -148,6 +149,67 @@ def export_split(
     return count
 
 
+def export_streaming_train_val(
+    adapter: Any,
+    dataset: Any,
+    val_split_name: str,
+    output_dir: Path,
+    download_images: bool,
+    train_max: Optional[int],
+    val_max: Optional[int],
+    val_ratio: float,
+    seed: int,
+    export_parquet_flag: bool,
+) -> tuple[int, int]:
+    if export_parquet_flag:
+        logger.warning("Streaming split does not support parquet export; skipping parquet.")
+    image_dir = Path("data/images") / adapter.name
+    train_path = output_dir / f"{adapter.name}_train.jsonl"
+    val_path = output_dir / f"{adapter.name}_{val_split_name}.jsonl"
+    rng = random.Random(seed)
+    train_count = 0
+    val_count = 0
+
+    with train_path.open("w", encoding="utf-8") as train_handle, val_path.open(
+        "w", encoding="utf-8"
+    ) as val_handle:
+        for ex in dataset:
+            if train_max is not None and val_max is not None:
+                if train_count >= train_max and val_count >= val_max:
+                    break
+
+            pick_val = rng.random() < val_ratio
+            target = "val" if pick_val else "train"
+
+            if target == "val" and val_max is not None and val_count >= val_max:
+                target = "train"
+            if target == "train" and train_max is not None and train_count >= train_max:
+                target = "val"
+            if target == "val" and val_max is not None and val_count >= val_max:
+                continue
+            if target == "train" and train_max is not None and train_count >= train_max:
+                continue
+
+            split_name = val_split_name if target == "val" else "train"
+            try:
+                unified = adapter.normalize_example(ex, split=split_name)
+                image_info = build_image_entry(
+                    adapter, ex, image_dir, download_images, unified.sample_id
+                )
+                unified.image = image_info
+                if target == "val":
+                    val_handle.write(json.dumps(unified.to_dict()) + "\n")
+                    val_count += 1
+                else:
+                    train_handle.write(json.dumps(unified.to_dict()) + "\n")
+                    train_count += 1
+            except Exception as exc:  # pragma: no cover - runtime data issues
+                logger.warning("Failed to normalize sample: %s", exc)
+                continue
+
+    return train_count, val_count
+
+
 def split_train_val(dataset: Any, val_ratio: float, seed: int) -> tuple[Any, Any]:
     if hasattr(dataset, "train_test_split"):
         split = dataset.train_test_split(test_size=val_ratio, seed=seed, shuffle=True)
@@ -179,6 +241,7 @@ def prepare_entry(
     val_ratio = float(entry.get("val_ratio", recipe.get("val_ratio_default", 0.03)))
     seed = int(entry.get("seed", recipe.get("seed", 42)))
     download_images = resolve_download_images(entry, recipe, download_images_override)
+    streaming = bool(entry.get("streaming", False))
 
     output_root = Path(recipe.get("output_root", "data/processed"))
     output_dir = output_root / adapter.name
@@ -196,7 +259,42 @@ def prepare_entry(
             raise ValueError(f"{name} val_from_train requires a val split name")
 
         logger.info("Loading %s split=train (val_from_train)", name)
-        dataset = adapter.load(subset=subset, split="train")
+        dataset = adapter.load(subset=subset, split="train", streaming=streaming)
+        if streaming or not hasattr(dataset, "train_test_split"):
+            train_max = resolve_max_samples(entry, "train", mode, override_max)
+            val_max = resolve_max_samples(entry, val_split_name, mode, override_max)
+            train_count, val_count = export_streaming_train_val(
+                adapter=adapter,
+                dataset=dataset,
+                val_split_name=val_split_name,
+                output_dir=output_dir,
+                download_images=download_images,
+                train_max=train_max,
+                val_max=val_max,
+                val_ratio=val_ratio,
+                seed=seed,
+                export_parquet_flag=export_parquet_flag,
+            )
+            manifest.append(
+                ManifestEntry(
+                    dataset=adapter.name,
+                    split="train",
+                    num_examples=train_count,
+                    schema_version=schema_version,
+                    timestamp=timestamp,
+                )
+            )
+            manifest.append(
+                ManifestEntry(
+                    dataset=adapter.name,
+                    split=val_split_name,
+                    num_examples=val_count,
+                    schema_version=schema_version,
+                    timestamp=timestamp,
+                )
+            )
+            return manifest
+
         dataset = shuffle_dataset(dataset, seed=seed)
         train_ds, val_ds = split_train_val(dataset, val_ratio=val_ratio, seed=seed)
 
@@ -244,7 +342,7 @@ def prepare_entry(
             if split in ("train", val_split_name):
                 continue
             logger.info("Loading %s split=%s", name, split)
-            dataset = adapter.load(subset=subset, split=split)
+            dataset = adapter.load(subset=subset, split=split, streaming=streaming)
             split_max = resolve_max_samples(entry, split, mode, override_max)
             dataset = maybe_shuffle(dataset, seed=seed, max_samples=split_max)
             count = export_split(
@@ -269,7 +367,7 @@ def prepare_entry(
 
     for split in splits:
         logger.info("Loading %s split=%s", name, split)
-        dataset = adapter.load(subset=subset, split=split)
+        dataset = adapter.load(subset=subset, split=split, streaming=streaming)
         split_max = resolve_max_samples(entry, split, mode, override_max)
         dataset = maybe_shuffle(dataset, seed=seed, max_samples=split_max)
         count = export_split(
