@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 import logging
 import os
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 from PIL import Image
@@ -13,6 +13,65 @@ from .hf_utils import safe_load_dataset
 from .image_utils import image_to_jpeg_bytes, load_image_from_path, load_image_from_url, sha1_bytes
 
 logger = logging.getLogger(__name__)
+
+_IMAGE_ROOTS_CACHE: Optional[List[Path]] = None
+_IMAGE_SUBDIRS_CACHE: Dict[Path, List[Path]] = {}
+_MISSING_IMAGE_CACHE: Set[str] = set()
+_MISSING_ROOTS_CACHE: Set[str] = set()
+
+
+def _get_env_image_roots() -> List[Path]:
+    global _IMAGE_ROOTS_CACHE
+    if _IMAGE_ROOTS_CACHE is not None:
+        return _IMAGE_ROOTS_CACHE
+    roots_env = os.environ.get("VOVNET_IMAGE_ROOTS") or os.environ.get("VOVNET_IMAGE_ROOT")
+    roots: List[Path] = []
+    if roots_env:
+        for part in roots_env.split(os.pathsep):
+            part = part.strip()
+            if not part:
+                continue
+            root = Path(part).expanduser()
+            if not root.exists():
+                key = str(root)
+                if key not in _MISSING_ROOTS_CACHE:
+                    _MISSING_ROOTS_CACHE.add(key)
+                    logger.warning("Image root does not exist: %s", root)
+            roots.append(root)
+    _IMAGE_ROOTS_CACHE = roots
+    return roots
+
+
+def _resolve_relative_path(path: Path, image_root: Optional[Path]) -> Optional[Path]:
+    candidates: List[Path] = []
+    if image_root:
+        candidates.append(image_root / path)
+    for root in _get_env_image_roots():
+        candidates.append(root / path)
+        subdirs = _IMAGE_SUBDIRS_CACHE.get(root)
+        if subdirs is None:
+            try:
+                subdirs = [item for item in root.iterdir() if item.is_dir()]
+            except Exception:
+                subdirs = []
+            _IMAGE_SUBDIRS_CACHE[root] = subdirs
+        for subdir in subdirs:
+            candidates.append(subdir / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _log_missing_image(path: Path) -> None:
+    key = str(path)
+    if key in _MISSING_IMAGE_CACHE:
+        return
+    _MISSING_IMAGE_CACHE.add(key)
+    logger.warning(
+        "Failed to resolve image path %s. Set VOVNET_IMAGE_ROOTS to the image root.",
+        path,
+    )
 
 @dataclass
 class ImageInfo:
@@ -263,16 +322,30 @@ def resolve_image_field(value: Any, image_root: Optional[Path] = None) -> Option
             return Image.open(io.BytesIO(value["bytes"])).convert("RGB")
         if value.get("path"):
             path = Path(value["path"])
-            if image_root and not path.is_absolute():
-                path = image_root / path
-            return load_image_from_path(path)
+            if path.is_absolute():
+                if path.exists():
+                    return load_image_from_path(path)
+                _log_missing_image(path)
+                return None
+            resolved = _resolve_relative_path(path, image_root)
+            if resolved is None:
+                _log_missing_image(path)
+                return None
+            return load_image_from_path(resolved)
         if value.get("url"):
             return load_image_from_url(value["url"])
     if isinstance(value, str):
         if value.startswith("http://") or value.startswith("https://"):
             return load_image_from_url(value)
         path = Path(value)
-        if image_root and not path.is_absolute():
-            path = image_root / path
-        return load_image_from_path(path)
+        if path.is_absolute():
+            if path.exists():
+                return load_image_from_path(path)
+            _log_missing_image(path)
+            return None
+        resolved = _resolve_relative_path(path, image_root)
+        if resolved is None:
+            _log_missing_image(path)
+            return None
+        return load_image_from_path(resolved)
     return None

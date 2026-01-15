@@ -88,6 +88,8 @@ python scripts/prepare_all.py --mode paper
 - `--subset`：HF 配置名（部分数据集必须指定）
 - `--streaming`：启用 HF streaming（适合超大数据集或生成失败时）
 - `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_VQA_V2`）
+- `VOVNET_IMAGE_ROOTS`：当样本只提供图片文件名时，用该变量指定图片目录（用 `:` 分隔多个目录）
+- `VOVNET_IMAGE_ROOT`：单一路径版本（只需一个根目录时更方便）
 
 ### 3.4 访问受限数据集 / HF Token
 如遇到权限问题，请先登录：
@@ -105,6 +107,16 @@ export HUGGINGFACE_HUB_TOKEN=你的token
 ```
 
 若服务器无法联网，请在有网环境准备好缓存并拷贝到 `~/.cache/huggingface`。
+
+### 3.5 图片路径常见问题
+如果日志提示类似 `Failed to load image from path 000000101038.jpg`，说明样本里只有文件名但本地未找到图片。
+解决方式：
+
+```bash
+export VOVNET_IMAGE_ROOTS=/path/to/coco/train2014:/path/to/coco/val2014
+```
+
+然后重新执行 `prepare_dataset.py` / `prepare_all.py` 即可。
 
 ## 4. 训练脚本执行
 
