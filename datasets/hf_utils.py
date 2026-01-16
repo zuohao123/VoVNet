@@ -134,13 +134,31 @@ def safe_load_dataset(
     subset: Optional[str],
     split: str,
     streaming: bool = False,
+    _retry_disable_multiprocessing: bool = True,
 ) -> Any:
     """Load HF dataset with retries and helpful errors."""
     hf_datasets = import_hf_datasets()
     token = _get_env_token()
     trust_remote_code = _get_env_bool("VOVNET_HF_TRUST_REMOTE_CODE", default=False)
 
+    def _apply_hf_config() -> None:
+        if _get_env_bool("VOVNET_HF_DISABLE_MULTIPROCESSING", default=False) or _get_env_bool(
+            "HF_DATASETS_DISABLE_MULTIPROCESSING", default=False
+        ):
+            try:
+                hf_datasets.config.HF_DATASETS_DISABLE_MULTIPROCESSING = True
+            except Exception:
+                pass
+        if _get_env_bool("VOVNET_HF_DISABLE_PROGRESS", default=False) or _get_env_bool(
+            "HF_DATASETS_DISABLE_PROGRESS_BAR", default=False
+        ):
+            try:
+                hf_datasets.disable_progress_bar()
+            except Exception:
+                pass
+
     def _load() -> Any:
+        _apply_hf_config()
         kwargs: dict[str, Any] = {
             "split": split,
             "streaming": streaming,
@@ -167,12 +185,21 @@ def safe_load_dataset(
     try:
         return retry(_load, retries=3, base_delay=1.0)
     except Exception as exc:
-        if not streaming and _is_rlock_error(exc):
+        if _is_rlock_error(exc) and _retry_disable_multiprocessing:
             logger.warning(
-                "HF dataset load hit RLock error; retrying with streaming=True for %s.",
+                "HF dataset load hit RLock error; retrying with streaming=True and "
+                "multiprocessing disabled for %s.",
                 dataset_id,
             )
-            return safe_load_dataset(dataset_id, subset, split, streaming=True)
+            os.environ["VOVNET_HF_DISABLE_MULTIPROCESSING"] = "1"
+            os.environ["HF_DATASETS_DISABLE_MULTIPROCESSING"] = "1"
+            return safe_load_dataset(
+                dataset_id,
+                subset,
+                split,
+                streaming=True,
+                _retry_disable_multiprocessing=False,
+            )
         info = try_dataset_info(dataset_id)
         hint = (
             f"Dataset info: {info}" if info else "Set --subset or check dataset id."
