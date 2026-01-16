@@ -1,6 +1,7 @@
 """Adapter for TextVQA (HuggingFace datasets)."""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 from PIL import Image
@@ -14,6 +15,7 @@ from ..common import (
     resolve_answer_list,
     resolve_image_field,
 )
+from .local_utils import load_dataset_with_fallback, resolve_dataset_root, resolve_image_root
 
 
 class TextVQAAdapter(HFAdapterBase):
@@ -24,9 +26,27 @@ class TextVQAAdapter(HFAdapterBase):
     """
 
     name = "textvqa"
+    env_prefix = "TEXTVQA"
     hf_dataset_id = "facebook/textvqa"
     hf_dataset_id_candidates = ["facebook/textvqa", "textvqa"]
     task_type = "ocr_vqa"
+
+    def __init__(self) -> None:
+        super().__init__()
+        root, _ = resolve_dataset_root(self.name, self.env_prefix)
+        self.image_root = resolve_image_root(root, self.env_prefix)
+
+    def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:
+        env_key = f"VOVNET_HF_DATASET_ID_{self.env_prefix}"
+        if env_key not in os.environ and "VOVNET_HF_DATASET_ID" not in os.environ:
+            os.environ[env_key] = self.hf_dataset_id
+        return load_dataset_with_fallback(
+            name=self.name,
+            env_prefix=self.env_prefix,
+            split=split,
+            subset=subset,
+            streaming=streaming,
+        )
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:
         question = str(ex.get("question", ""))
@@ -68,4 +88,4 @@ class TextVQAAdapter(HFAdapterBase):
         )
 
     def get_image(self, ex: Dict[str, Any]) -> Optional[Image.Image]:
-        return resolve_image_field(ex.get("image"))
+        return resolve_image_field(ex.get("image"), image_root=self.image_root)
