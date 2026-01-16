@@ -61,7 +61,7 @@ def _split_tokens(split: str) -> List[str]:
 def _list_data_files(root: Path) -> List[Path]:
     if not root.exists():
         return []
-    exts = {".json", ".jsonl", ".csv", ".tsv"}
+    exts = {".json", ".jsonl", ".csv", ".tsv", ".parquet"}
     files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts]
     return sorted(files)
 
@@ -160,11 +160,25 @@ def load_records_from_file(path: Path, split: str) -> List[Dict[str, Any]]:
     if suffix == ".json":
         data = json.loads(path.read_text(encoding="utf-8"))
         return _extract_records_from_json(data, split)
+    if suffix == ".parquet":
+        return _read_parquet(path)
     if suffix == ".tsv":
         return _read_table(path, sep="\t")
     if suffix == ".csv":
         return _read_table(path, sep=",")
     raise ValueError(f"Unsupported dataset file: {path}")
+
+
+def _read_parquet(path: Path) -> List[Dict[str, Any]]:
+    try:
+        import pyarrow.parquet as pq
+    except Exception:
+        import pandas as pd
+
+        df = pd.read_parquet(path)
+        return df.to_dict(orient="records")
+    table = pq.read_table(path)
+    return table.to_pylist()
 
 
 def load_records(files: Sequence[Path], split: str) -> List[Dict[str, Any]]:
@@ -195,6 +209,11 @@ def load_dataset_with_fallback(
                 name,
                 exc,
             )
+            try:
+                root, _ = resolve_dataset_root(name, env_prefix)
+                download_hf_dataset_files(env_id, subset, split, root)
+            except Exception as dl_exc:
+                logger.warning("Failed to download HF dataset files: %s", dl_exc)
 
     root, explicit = resolve_dataset_root(name, env_prefix)
     files = select_data_files(root, split, subset, explicit)
@@ -204,6 +223,57 @@ def load_dataset_with_fallback(
             f"Failed to load {name} from HF ({env_id}) and no local records found."
         ) from last_exc
     return records
+
+
+def download_hf_dataset_files(
+    dataset_id: str,
+    subset: Optional[str],
+    split: str,
+    target_root: Path,
+) -> List[Path]:
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("huggingface_hub is required to download HF datasets") from exc
+
+    api = HfApi()
+    files = api.list_repo_files(repo_id=dataset_id, repo_type="dataset")
+    candidates = _filter_hf_files(files, subset, split)
+    if not candidates:
+        raise FileNotFoundError(
+            f"No matching HF files for {dataset_id} (subset={subset}, split={split})."
+        )
+    target_root.mkdir(parents=True, exist_ok=True)
+    downloaded: List[Path] = []
+    for filename in candidates:
+        local_path = hf_hub_download(
+            repo_id=dataset_id,
+            repo_type="dataset",
+            filename=filename,
+            local_dir=target_root,
+            local_dir_use_symlinks=False,
+        )
+        downloaded.append(Path(local_path))
+    return downloaded
+
+
+def _filter_hf_files(
+    files: Sequence[str],
+    subset: Optional[str],
+    split: str,
+) -> List[str]:
+    split_token = split.lower()
+    subset_token = subset.lower() if subset else None
+    candidates: List[str] = []
+    for filename in files:
+        lower = filename.lower()
+        if split_token not in lower:
+            continue
+        if subset_token and subset_token not in lower:
+            continue
+        if lower.endswith((".parquet", ".jsonl", ".json", ".csv", ".tsv")):
+            candidates.append(filename)
+    return candidates
 
 
 def first_non_empty(ex: dict, keys: Sequence[str]) -> Any:
