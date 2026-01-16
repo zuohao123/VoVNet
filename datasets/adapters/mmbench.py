@@ -70,7 +70,7 @@ class MMBenchAdapter:
             sample_id = str(hash(question))
 
         meta_extra = {}
-        for key in ("category", "l2-category", "source", "image", "split", "language"):
+        for key in ("category", "l2-category", "source", "split", "language"):
             if key in ex:
                 meta_extra[key] = ex.get(key)
 

@@ -66,7 +66,7 @@ class MMMUAdapter:
             sample_id = str(hash(question))
 
         meta_extra = {}
-        for key in ("subject", "subfield", "topic", "difficulty", "source", "image"):
+        for key in ("subject", "subfield", "topic", "difficulty", "source"):
             if key in ex:
                 meta_extra[key] = ex.get(key)
 
