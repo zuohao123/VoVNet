@@ -167,6 +167,12 @@ def safe_load_dataset(
     try:
         return retry(_load, retries=3, base_delay=1.0)
     except Exception as exc:
+        if not streaming and _is_rlock_error(exc):
+            logger.warning(
+                "HF dataset load hit RLock error; retrying with streaming=True for %s.",
+                dataset_id,
+            )
+            return safe_load_dataset(dataset_id, subset, split, streaming=True)
         info = try_dataset_info(dataset_id)
         hint = (
             f"Dataset info: {info}" if info else "Set --subset or check dataset id."
@@ -174,3 +180,15 @@ def safe_load_dataset(
         raise RuntimeError(
             f"Failed to load dataset {dataset_id} (subset={subset}, split={split}). {hint}"
         ) from exc
+
+
+def _is_rlock_error(exc: Exception) -> bool:
+    needle = "RLock objects should only be shared between processes through inheritance"
+    seen = set()
+    current: Optional[BaseException] = exc
+    while current and current not in seen:
+        seen.add(current)
+        if needle in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
