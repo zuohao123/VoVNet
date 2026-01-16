@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
+from PIL import Image
 
 from src.data.adapters.jsonl import JsonlVQADataset
 from src.data.collate import VLMDataCollator
@@ -35,9 +36,13 @@ class DummyTokenizer:
 
 
 def test_jsonl_dataset_and_collator(tmp_path: Path) -> None:
+    img_path = tmp_path / "sample.jpg"
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(img_path)
+
     data = [
         {"question": "What?", "answer": "Yes", "image": "missing.jpg", "id": "1"},
         {"question": "Where?", "answer": "Here", "id": "2"},
+        {"question": "Image?", "answer": "Red", "image": {"path": "sample.jpg"}, "id": "3"},
     ]
     jsonl_path = tmp_path / "data.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as handle:
@@ -45,12 +50,12 @@ def test_jsonl_dataset_and_collator(tmp_path: Path) -> None:
             handle.write(json.dumps(item) + "\n")
 
     dataset = JsonlVQADataset(jsonl_path)
-    assert len(dataset) == 2
+    assert len(dataset) == 3
 
     collator = VLMDataCollator(
         tokenizer=DummyTokenizer(),
         prompt_template="Question: {question}\nAnswer:",
     )
-    batch = collator([dataset[0], dataset[1]])
-    assert batch["input_ids"].shape[0] == 2
+    batch = collator([dataset[0], dataset[1], dataset[2]])
+    assert batch["input_ids"].shape[0] == 3
     assert batch["labels"].shape == batch["input_ids"].shape

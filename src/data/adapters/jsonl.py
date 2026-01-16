@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PIL import Image
+
+from datasets.common import resolve_image_field
 from torch.utils.data import Dataset
 
 from src.utils.io import read_jsonl
@@ -64,13 +66,20 @@ class JsonlVQADataset(Dataset):
             "meta": meta,
         }
 
-    def _load_image(self, image_path: str) -> Optional[Image.Image]:
-        path = Path(image_path)
-        if not path.is_absolute():
-            path = self.path.parent / path
-        try:
-            with Image.open(path) as img:
-                return img.convert("RGB")
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.warning("Failed to load image %s: %s", path, exc)
+    def _load_image(self, image_path: Any) -> Optional[Image.Image]:
+        if image_path is None:
             return None
+        if isinstance(image_path, dict) or isinstance(image_path, str):
+            image = resolve_image_field(image_path, image_root=self.path.parent)
+            if image is not None:
+                return image
+        if isinstance(image_path, str):
+            path = Path(image_path)
+            if not path.is_absolute():
+                path = self.path.parent / path
+            try:
+                with Image.open(path) as img:
+                    return img.convert("RGB")
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning("Failed to load image %s: %s", path, exc)
+        return None

@@ -6,7 +6,8 @@ from typing import Dict
 from .adapters.gqa import GQAAdapter
 from .adapters.llava_instruct_150k import LLaVAInstructAdapter
 from .adapters.mathvista import MathVistaAdapter
-from .adapters.mmbench import MMBenchAdapter
+from .adapters.mmbench import MMBenchAdapter, MMBenchLiteAdapter
+from .adapters.mmmu import MMMUAdapter
 from .adapters.mmmu_pro import MMMUProAdapter
 from .adapters.open_orca import OpenOrcaAdapter
 from .adapters.seed_bench import SeedBenchAdapter
@@ -19,10 +20,13 @@ _REGISTRY = {
     "vqa_v2": VQAv2Adapter,
     "gqa": GQAAdapter,
     "textvqa": TextVQAAdapter,
+    "text_heavy_vqa": TextVQAAdapter,
     "vizwiz": VizWizAdapter,
     "llava_instruct_150k": LLaVAInstructAdapter,
     "open_orca": OpenOrcaAdapter,
     "mmbench": MMBenchAdapter,
+    "mmbench_lite": MMBenchLiteAdapter,
+    "mmmu": MMMUAdapter,
     "mmmu_pro": MMMUProAdapter,
     "mathvista": MathVistaAdapter,
     "seed_bench": SeedBenchAdapter,

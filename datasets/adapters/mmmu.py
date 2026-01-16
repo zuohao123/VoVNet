@@ -1,4 +1,4 @@
-"""Adapters for MMBench-style datasets."""
+"""Adapter for MMMU (local files or HF override via env)."""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -19,11 +19,11 @@ from .local_utils import (
 )
 
 
-class MMBenchAdapter:
-    """MMBench adapter (local files or HF override via env)."""
+class MMMUAdapter:
+    """MMMU adapter."""
 
-    name = "mmbench"
-    env_prefix = "MMBENCH"
+    name = "mmmu"
+    env_prefix = "MMMU"
     task_type = "multi_choice_vqa"
 
     def __init__(self) -> None:
@@ -43,16 +43,12 @@ class MMBenchAdapter:
         question = coerce_str(
             first_non_empty(ex, ["question", "query", "prompt", "instruction", "text"])
         )
-        context = first_non_empty(ex, ["hint", "context", "rationale"])
+        context = first_non_empty(ex, ["context", "hint", "explanation"])
         context = coerce_str(context) if context is not None else None
 
         choices = parse_choice_list(first_non_empty(ex, ["choices", "options", "candidates"]))
         if not choices:
             choices = extract_letter_choices(ex, list("ABCDEFGH"))
-        if not choices:
-            choices = parse_choice_list(
-                first_non_empty(ex, ["option_list", "option", "options_text"])
-            )
         if not choices:
             for prefix in ("option", "choice"):
                 candidates = [
@@ -65,12 +61,12 @@ class MMBenchAdapter:
         answer_raw = first_non_empty(ex, ["answer", "label", "gt_answer", "correct"])
         answer_text, answer_label = map_answer_to_choice(answer_raw, choices)
 
-        sample_id = coerce_str(first_non_empty(ex, ["index", "id", "question_id", "uid"]))
+        sample_id = coerce_str(first_non_empty(ex, ["id", "question_id", "uid", "index"]))
         if not sample_id:
             sample_id = str(hash(question))
 
         meta_extra = {}
-        for key in ("category", "l2-category", "source", "image", "split", "language"):
+        for key in ("subject", "subfield", "topic", "difficulty", "source", "image"):
             if key in ex:
                 meta_extra[key] = ex.get(key)
 
@@ -106,13 +102,14 @@ class MMBenchAdapter:
     def get_image(self, ex: Dict[str, Any]) -> Optional[Image.Image]:
         return resolve_image_from_record(
             ex,
-            fields=["image", "image_path", "image_file", "image_id", "img", "img_path", "image_url"],
+            fields=[
+                "image",
+                "image_path",
+                "image_file",
+                "image_id",
+                "img",
+                "img_path",
+                "image_url",
+            ],
             image_root=self.image_root,
         )
-
-
-class MMBenchLiteAdapter(MMBenchAdapter):
-    """MMBench-Lite adapter (local files or HF override via env)."""
-
-    name = "mmbench_lite"
-    env_prefix = "MMBENCH_LITE"
