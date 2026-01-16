@@ -55,24 +55,53 @@ model:
 
 ## 3. 数据集下载与规范化（统一 JSONL）
 
-### 3.1 单个数据集
+### 3.1 一键下载 + 处理（推荐）
 
-示例：VQA v2（如数据集需要配置名，再显式指定 `--subset`）
+```bash
+python scripts/download_and_prepare.py \
+  --lang en \
+  --mmbench_lite_url <MMBENCH_LITE_URL>
+```
+
+输出：
+- `data/processed/mmbench/mmbench_train.jsonl`
+- `data/processed/mmbench/mmbench_test.jsonl`
+- `data/processed/mmbench_lite/mmbench_lite_train.jsonl`
+- `data/processed/mmmu/mmmu_validation.jsonl`
+- `data/processed/textvqa/textvqa_validation.jsonl`
+- 合并训练集：`data/processed/mmbench_core/mmbench_core_train.jsonl`
+如不想在命令行传 URL，可改用环境变量 `VOVNET_MMBENCH_LITE_URL`。
+
+HF-only 模式（MMBench 来自 HF；MMBench-Lite 需提供 HF id 或 URL）：
+
+```bash
+python scripts/download_and_prepare.py \
+  --prepare_only \
+  --mmbench_hf_id lmms-lab/MMBench_EN \
+  --mmbench_splits dev,test \
+  --mmbench_train_split dev \
+  --mmbench_lite_hf_id <HF_MMBENCH_LITE_ID>
+```
+
+### 3.2 单个数据集
+
+示例：MMBench（如数据集需要配置名，再显式指定 `--subset`）
 
 ```bash
 python scripts/prepare_dataset.py \
-  --dataset vqa_v2 \
-  --splits train,validation \
+  --dataset mmbench \
+  --subset en \
+  --splits train,test \
   --download-images \
   --max_samples 1000
 ```
 
 输出：
-- `data/processed/vqa_v2/vqa_v2_train.jsonl`
-- `data/processed/vqa_v2/vqa_v2_validation.jsonl`
-- 图片缓存（如果开启）：`data/images/vqa_v2/`
+- `data/processed/mmbench/mmbench_train.jsonl`
+- `data/processed/mmbench/mmbench_test.jsonl`
+- 图片缓存（如果开启）：`data/images/mmbench/`
 
-### 3.2 批量数据集
+### 3.3 批量数据集
 
 使用 `configs/data_recipe.yaml` 统一控制数据集列表与采样规模：
 
@@ -81,17 +110,18 @@ python scripts/prepare_all.py --mode fast_dev
 python scripts/prepare_all.py --mode paper
 ```
 
-### 3.3 常用参数说明
+### 3.4 常用参数说明
 - `--download-images`：下载并保存到 `data/images/<dataset>/`，否则保留 HF 引用
 - `--export-parquet`：额外导出 Parquet（需要 `pyarrow`）
 - `--max_samples`：抽样上限（便于快速验证）
 - `--subset`：HF 配置名（部分数据集必须指定）
 - `--streaming`：启用 HF streaming（适合超大数据集或生成失败时）
-- `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_VQA_V2`）
+- `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_MMMU`）
+- `VOVNET_MMBENCH_LITE_URL`：MMBench-Lite 的下载地址（供一键脚本使用）
 - `VOVNET_IMAGE_ROOTS`：当样本只提供图片文件名时，用该变量指定图片目录（用 `:` 分隔多个目录）
 - `VOVNET_IMAGE_ROOT`：单一路径版本（只需一个根目录时更方便）
 
-### 3.4 访问受限数据集 / HF Token
+### 3.5 访问受限数据集 / HF Token
 如遇到权限问题，请先登录：
 
 ```bash
@@ -108,7 +138,7 @@ export HUGGINGFACE_HUB_TOKEN=你的token
 
 若服务器无法联网，请在有网环境准备好缓存并拷贝到 `~/.cache/huggingface`。
 
-### 3.5 图片路径常见问题
+### 3.6 图片路径常见问题
 如果日志提示类似 `Failed to load image from path 000000101038.jpg`，说明样本里只有文件名但本地未找到图片。
 解决方式：
 
@@ -125,32 +155,26 @@ export VOVNET_IMAGE_ROOTS=/path/to/coco/train2014:/path/to/coco/val2014
 ### 4.1 基本训练
 
 ```bash
-python scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+python scripts/train.py --config configs/base.yaml --config configs/train_mmbench.yaml
 ```
 
 ### 4.2 多 GPU（8x V100）
 
 ```bash
 accelerate launch --num_processes 8 \
-  scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+  scripts/train.py --config configs/base.yaml --config configs/train_mmbench.yaml
 ```
 
 ### 4.3 训练数据路径
-`configs/train_vqa.yaml` 默认读取：
+`configs/train_mmbench.yaml` 默认读取：
 
 ```yaml
 data:
-  train_jsonl: "data/train_vqa.jsonl"
-  eval_jsonl: "data/val_vqa.jsonl"
+  train_jsonl: "data/processed/mmbench_core/mmbench_core_train.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_test.jsonl"
 ```
 
-如果你用的是上面脚本生成的输出，请修改为：
-
-```yaml
-data:
-  train_jsonl: "data/processed/vqa_v2/vqa_v2_train.jsonl"
-  eval_jsonl: "data/processed/vqa_v2/vqa_v2_validation.jsonl"
-```
+如果你用的是上面脚本生成的输出，保持默认即可。
 
 ## 5. 常见问题排查
 

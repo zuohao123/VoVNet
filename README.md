@@ -12,7 +12,7 @@ pip install -r requirements.txt
 
 ## Data format
 
-JSONL entries:
+JSONL entries (answer can be a string or an object with `text`):
 
 ```json
 {"image": "path/to/image.jpg", "question": "...", "answer": "...", "id": "123", "meta": {"source": "toy"}}
@@ -24,12 +24,12 @@ Fields are configurable in `configs/*.yaml`.
 
 1) Edit configs:
 - `configs/base.yaml` for defaults
-- `configs/train_vqa.yaml` or `configs/train_instruct.yaml` for overrides
+- `configs/train_mmbench.yaml` for overrides
 
 2) Launch training:
 
 ```bash
-python scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+python scripts/train.py --config configs/base.yaml --config configs/train_mmbench.yaml
 ```
 
 DeepSpeed configs are auto-generated into `outputs/deepspeed_config.json`.
@@ -40,7 +40,7 @@ Training runs also write reproducibility metadata to:
 For multi-GPU runs, use accelerate:
 
 ```bash
-accelerate launch --num_processes 8 scripts/train.py --config configs/base.yaml --config configs/train_vqa.yaml
+accelerate launch --num_processes 8 scripts/train.py --config configs/base.yaml --config configs/train_mmbench.yaml
 ```
 
 ## Running baselines
@@ -90,13 +90,25 @@ Outputs:
 
 ## Dataset preparation
 
-Prepare a dataset into the unified JSONL schema:
+One-click download + prepare (MMBench/MMBench-Lite/MMMU/TextVQA):
 
 ```bash
-python scripts/prepare_dataset.py --dataset vqa_v2 --subset vqa_v2 --splits train,validation --download-images
+python scripts/download_and_prepare.py --lang en --mmbench_lite_url <MMBENCH_LITE_URL>
 ```
 
 Outputs go to `data/processed/<dataset>/` with optional images in `data/images/<dataset>/`.
+You can also set `VOVNET_MMBENCH_LITE_URL` instead of passing `--mmbench_lite_url`.
+
+HF-only mode (MMBench from HF; provide your own MMBench-Lite HF id or URL):
+
+```bash
+python scripts/download_and_prepare.py \
+  --prepare_only \
+  --mmbench_hf_id lmms-lab/MMBench_EN \
+  --mmbench_splits dev,test \
+  --mmbench_train_split dev \
+  --mmbench_lite_hf_id <HF_MMBENCH_LITE_ID>
+```
 
 ## Recommended dataset recipe
 

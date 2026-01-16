@@ -25,7 +25,7 @@ logger = logging.getLogger("prepare_dataset")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare multimodal datasets")
-    parser.add_argument("--dataset", required=True, help="dataset name (e.g., vqa_v2)")
+    parser.add_argument("--dataset", required=True, help="dataset name (e.g., mmbench)")
     parser.add_argument("--subset", default=None, help="HF subset/config name")
     parser.add_argument("--splits", default="train", help="comma-separated splits")
     parser.add_argument(

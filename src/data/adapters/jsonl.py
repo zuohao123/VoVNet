@@ -53,7 +53,7 @@ class JsonlVQADataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.items[idx]
         question = str(item.get(self.text_field, ""))
-        answer = str(item.get(self.answer_field, ""))
+        answer = self._resolve_answer(item.get(self.answer_field))
         image_path = item.get(self.image_field)
         image = self._load_image(image_path) if image_path else None
         sample_id = str(item.get("id", idx))
@@ -65,6 +65,29 @@ class JsonlVQADataset(Dataset):
             "id": sample_id,
             "meta": meta,
         }
+
+    def _resolve_answer(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            text = value.get("text")
+            if text not in (None, ""):
+                return str(text)
+            raw = value.get("raw")
+            if isinstance(raw, list) and raw:
+                return str(raw[0])
+            if raw not in (None, "", []):
+                return str(raw)
+            label = value.get("label")
+            if label is not None:
+                return str(label)
+            return ""
+        if isinstance(value, list):
+            for item in value:
+                if item not in (None, ""):
+                    return str(item)
+            return ""
+        return str(value)
 
     def _load_image(self, image_path: Any) -> Optional[Image.Image]:
         if image_path is None:

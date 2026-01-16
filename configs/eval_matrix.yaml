@@ -7,15 +7,15 @@ defaults:
   max_samples: null
 
 datasets:
-  - name: "vqa_v2"
+  - name: "mmbench"
     source: "jsonl"
-    jsonl: "data/processed/vqa_v2/vqa_v2_validation.jsonl"
+    jsonl: "data/processed/mmbench/mmbench_test.jsonl"
     metric: "exact_match"
-  - name: "gqa"
+  - name: "mmmu"
     source: "jsonl"
-    jsonl: "data/processed/gqa/gqa_validation.jsonl"
+    jsonl: "data/processed/mmmu/mmmu_validation.jsonl"
     metric: "exact_match"
-  - name: "textvqa"
+  - name: "text_heavy_vqa"
     source: "jsonl"
     jsonl: "data/processed/textvqa/textvqa_validation.jsonl"
     prompt_template: "Question: {question}\nAnswer:"

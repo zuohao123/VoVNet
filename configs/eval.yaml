@@ -1,7 +1,7 @@
 # Overrides for evaluation
 
 data:
-  eval_jsonl: "data/val_vqa.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_test.jsonl"
 
 eval:
   batch_size: 1

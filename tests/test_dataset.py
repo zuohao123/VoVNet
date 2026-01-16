@@ -42,7 +42,12 @@ def test_jsonl_dataset_and_collator(tmp_path: Path) -> None:
     data = [
         {"question": "What?", "answer": "Yes", "image": "missing.jpg", "id": "1"},
         {"question": "Where?", "answer": "Here", "id": "2"},
-        {"question": "Image?", "answer": "Red", "image": {"path": "sample.jpg"}, "id": "3"},
+        {
+            "question": "Image?",
+            "answer": {"text": "Red"},
+            "image": {"path": "sample.jpg"},
+            "id": "3",
+        },
     ]
     jsonl_path = tmp_path / "data.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as handle:
@@ -51,6 +56,8 @@ def test_jsonl_dataset_and_collator(tmp_path: Path) -> None:
 
     dataset = JsonlVQADataset(jsonl_path)
     assert len(dataset) == 3
+
+    assert dataset[2]["answer"] == "Red"
 
     collator = VLMDataCollator(
         tokenizer=DummyTokenizer(),

@@ -1,0 +1,12 @@
+# Overrides for MMBench-style training
+
+data:
+  train_jsonl: "data/processed/mmbench_core/mmbench_core_train.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_test.jsonl"
+  prompt_template: "Question: {question}\nAnswer:"
+
+training:
+  epochs: 2
+  per_device_batch_size: 2
+  gradient_accumulation: 2
+  deepspeed_stage: 2
