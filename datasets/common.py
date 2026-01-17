@@ -192,27 +192,57 @@ class HFAdapterBase:
 
     def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:
         last_exc: Optional[Exception] = None
-        for dataset_id in self._candidate_dataset_ids():
+        fallback_enabled = os.environ.get("VOVNET_HF_FALLBACK_DOWNLOAD", "1").strip().lower()
+        fallback_enabled = fallback_enabled not in {"0", "false", "no", "off"}
+
+        def _try_local_fallback(dataset_id: str, subset_name: Optional[str]) -> Optional[Any]:
+            if not fallback_enabled:
+                return None
             try:
-                if subset is None and self.default_subset is not None:
-                    try:
-                        return safe_load_dataset(
-                            dataset_id, self.default_subset, split, streaming=streaming
-                        )
-                    except Exception:
-                        pass
-                return safe_load_dataset(dataset_id, subset, split, streaming=streaming)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    "Failed to load dataset %s with id=%s (subset=%s, split=%s): %s",
-                    self.name,
-                    dataset_id,
-                    subset,
-                    split,
-                    exc,
+                from .adapters.local_utils import (
+                    download_hf_dataset_files,
+                    load_records,
+                    resolve_dataset_root,
                 )
-                continue
+            except Exception as exc:
+                logger.warning("Local fallback unavailable: %s", exc)
+                return None
+            try:
+                root, _ = resolve_dataset_root(self.name, self.name.upper())
+                files = download_hf_dataset_files(dataset_id, subset_name, split, root)
+                if not files:
+                    return None
+                return load_records(files, split)
+            except Exception as exc:
+                logger.warning("Local fallback failed for %s: %s", dataset_id, exc)
+                return None
+
+        for dataset_id in self._candidate_dataset_ids():
+            subset_candidates: List[Optional[str]]
+            if subset is None and self.default_subset is not None:
+                subset_candidates = [self.default_subset, None]
+            else:
+                subset_candidates = [subset]
+
+            for subset_name in subset_candidates:
+                try:
+                    return safe_load_dataset(
+                        dataset_id, subset_name, split, streaming=streaming
+                    )
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "Failed to load dataset %s with id=%s (subset=%s, split=%s): %s",
+                        self.name,
+                        dataset_id,
+                        subset_name,
+                        split,
+                        exc,
+                    )
+                    records = _try_local_fallback(dataset_id, subset_name)
+                    if records is not None:
+                        return records
+                    continue
         raise RuntimeError(
             f"Failed to load dataset {self.name} with candidate ids {self._candidate_dataset_ids()}"
         ) from last_exc
