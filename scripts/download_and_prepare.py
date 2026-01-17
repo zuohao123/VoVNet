@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--textvqa_hf_id",
-        default=os.environ.get("VOVNET_HF_DATASET_ID_TEXTVQA", "facebook/textvqa"),
+        default=os.environ.get("VOVNET_HF_DATASET_ID_TEXTVQA", "lmms-lab/textvqa"),
     )
     parser.add_argument("--download_only", action="store_true")
     parser.add_argument("--prepare_only", action="store_true")

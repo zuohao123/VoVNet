@@ -194,9 +194,10 @@ def load_dataset_with_fallback(
     split: str,
     subset: Optional[str],
     streaming: bool = False,
+    dataset_id: Optional[str] = None,
 ) -> Any:
     env_key = f"VOVNET_HF_DATASET_ID_{env_prefix}"
-    env_id = os.environ.get(env_key) or os.environ.get("VOVNET_HF_DATASET_ID")
+    env_id = dataset_id or os.environ.get(env_key) or os.environ.get("VOVNET_HF_DATASET_ID")
     last_exc: Optional[Exception] = None
     if env_id:
         try:

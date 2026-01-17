@@ -21,14 +21,14 @@ from .local_utils import load_dataset_with_fallback, resolve_dataset_root, resol
 class TextVQAAdapter(HFAdapterBase):
     """TextVQA adapter.
 
-    Notes: Common HF ids include "facebook/textvqa" or "textvqa".
+    Notes: Common HF ids include "lmms-lab/textvqa" or "facebook/textvqa".
     Override via VOVNET_HF_DATASET_ID_TEXTVQA if needed.
     """
 
     name = "textvqa"
     env_prefix = "TEXTVQA"
-    hf_dataset_id = "facebook/textvqa"
-    hf_dataset_id_candidates = ["facebook/textvqa", "textvqa"]
+    hf_dataset_id = "lmms-lab/textvqa"
+    hf_dataset_id_candidates = ["lmms-lab/textvqa", "facebook/textvqa", "textvqa"]
     task_type = "ocr_vqa"
 
     def __init__(self) -> None:
@@ -38,15 +38,31 @@ class TextVQAAdapter(HFAdapterBase):
 
     def load(self, subset: Optional[str], split: str, streaming: bool = False) -> Any:
         env_key = f"VOVNET_HF_DATASET_ID_{self.env_prefix}"
-        if env_key not in os.environ and "VOVNET_HF_DATASET_ID" not in os.environ:
-            os.environ[env_key] = self.hf_dataset_id
-        return load_dataset_with_fallback(
-            name=self.name,
-            env_prefix=self.env_prefix,
-            split=split,
-            subset=subset,
-            streaming=streaming,
-        )
+        override = os.environ.get(env_key) or os.environ.get("VOVNET_HF_DATASET_ID")
+        candidates = [override] if override else []
+        for candidate in self.hf_dataset_id_candidates or []:
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        if not candidates:
+            candidates = [self.hf_dataset_id]
+
+        last_exc: Optional[Exception] = None
+        for dataset_id in candidates:
+            try:
+                return load_dataset_with_fallback(
+                    name=self.name,
+                    env_prefix=self.env_prefix,
+                    split=split,
+                    subset=subset,
+                    streaming=streaming,
+                    dataset_id=dataset_id,
+                )
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Failed to load TextVQA dataset")
 
     def normalize_example(self, ex: Dict[str, Any], split: str) -> UnifiedExample:
         question = str(ex.get("question", ""))

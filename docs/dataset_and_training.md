@@ -116,7 +116,7 @@ python scripts/prepare_all.py --mode paper
 - `--max_samples`：抽样上限（便于快速验证）
 - `--subset`：HF 配置名（部分数据集必须指定）
 - `--streaming`：启用 HF streaming（适合超大数据集或生成失败时）
-- `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_MMMU`）
+- `VOVNET_HF_DATASET_ID_<NAME>`：覆盖 HF 数据集 ID（例如 `VOVNET_HF_DATASET_ID_TEXTVQA=lmms-lab/textvqa`）
 - `VOVNET_MMBENCH_LITE_URL`：MMBench-Lite 的下载地址（供一键脚本使用）
 - `VOVNET_IMAGE_ROOTS`：当样本只提供图片文件名时，用该变量指定图片目录（用 `:` 分隔多个目录）
 - `VOVNET_IMAGE_ROOT`：单一路径版本（只需一个根目录时更方便）
