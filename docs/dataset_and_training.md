@@ -59,8 +59,7 @@ model:
 
 ```bash
 python scripts/download_and_prepare.py \
-  --lang en \
-  --mmbench_lite_url <MMBENCH_LITE_URL>
+  --lang en
 ```
 
 输出：
@@ -70,17 +69,17 @@ python scripts/download_and_prepare.py \
 - `data/processed/mmmu/mmmu_validation.jsonl`
 - `data/processed/textvqa/textvqa_validation.jsonl`
 - 合并训练集：`data/processed/mmbench_core/mmbench_core_train.jsonl`
-如不想在命令行传 URL，可改用环境变量 `VOVNET_MMBENCH_LITE_URL`。
+MMBench-Lite 默认使用 HF id `lmms-lab/MMBench-Lite`。如需走 TSV 直链，可用
+`--mmbench_lite_url <MMBENCH_LITE_URL>` 或环境变量 `VOVNET_MMBENCH_LITE_URL`。
 
-HF-only 模式（MMBench 来自 HF；MMBench-Lite 需提供 HF id 或 URL）：
+HF-only 模式（MMBench 来自 HF；MMBench-Lite 可按需覆盖 HF id 或 URL）：
 
 ```bash
 python scripts/download_and_prepare.py \
   --prepare_only \
   --mmbench_hf_id lmms-lab/MMBench_EN \
   --mmbench_splits dev,test \
-  --mmbench_train_split dev \
-  --mmbench_lite_hf_id <HF_MMBENCH_LITE_ID>
+  --mmbench_train_split dev
 ```
 
 ### 3.2 单个数据集

@@ -93,21 +93,21 @@ Outputs:
 One-click download + prepare (MMBench/MMBench-Lite/MMMU/TextVQA):
 
 ```bash
-python scripts/download_and_prepare.py --lang en --mmbench_lite_url <MMBENCH_LITE_URL>
+python scripts/download_and_prepare.py --lang en
 ```
 
 Outputs go to `data/processed/<dataset>/` with optional images in `data/images/<dataset>/`.
-You can also set `VOVNET_MMBENCH_LITE_URL` instead of passing `--mmbench_lite_url`.
+MMBench-Lite defaults to HF id `lmms-lab/MMBench-Lite`. If you need a direct TSV URL, pass
+`--mmbench_lite_url <MMBENCH_LITE_URL>` or set `VOVNET_MMBENCH_LITE_URL`.
 
-HF-only mode (MMBench from HF; provide your own MMBench-Lite HF id or URL):
+HF-only mode (MMBench from HF; optionally override MMBench-Lite HF id or URL):
 
 ```bash
 python scripts/download_and_prepare.py \
   --prepare_only \
   --mmbench_hf_id lmms-lab/MMBench_EN \
   --mmbench_splits dev,test \
-  --mmbench_train_split dev \
-  --mmbench_lite_hf_id <HF_MMBENCH_LITE_ID>
+  --mmbench_train_split dev
 ```
 
 ## Recommended dataset recipe

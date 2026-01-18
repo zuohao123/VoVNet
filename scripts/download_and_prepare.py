@@ -33,6 +33,7 @@ MMBENCH_URLS = {
         "test": "http://opencompass.openxlab.space/utils/VLMEval/MMBench_TEST_CN.tsv",
     },
 }
+DEFAULT_MMBENCH_LITE_HF_ID = "lmms-lab/MMBench-Lite"
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,8 +52,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mmbench_lite_hf_id",
-        default=os.environ.get("VOVNET_HF_DATASET_ID_MMBENCH_LITE"),
-        help="Use HF dataset id for MMBench-Lite instead of direct TSV download",
+        default=None,
+        help=(
+            "Use HF dataset id for MMBench-Lite instead of direct TSV download. "
+            f"Defaults to {DEFAULT_MMBENCH_LITE_HF_ID} when no URL is provided."
+        ),
     )
     parser.add_argument(
         "--mmbench_dev_url",
@@ -66,8 +70,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mmbench_lite_url",
-        default=os.environ.get("VOVNET_MMBENCH_LITE_URL"),
-        help="MMBench-Lite TSV URL or local path",
+        default=None,
+        help="MMBench-Lite TSV URL or local path (overrides default HF id)",
     )
     parser.add_argument("--skip_mmbench_lite", action="store_true")
     parser.add_argument(
@@ -199,21 +203,27 @@ def main() -> None:
     mmbench_lite_splits = parse_csv(args.mmbench_lite_splits)
     mmmu_splits = parse_csv(args.mmmu_splits)
     textvqa_splits = parse_csv(args.textvqa_splits)
+    mmbench_lite_url = args.mmbench_lite_url or os.environ.get("VOVNET_MMBENCH_LITE_URL")
+    mmbench_lite_hf_id = (
+        args.mmbench_lite_hf_id or os.environ.get("VOVNET_HF_DATASET_ID_MMBENCH_LITE")
+    )
+    if not mmbench_lite_hf_id and not mmbench_lite_url:
+        mmbench_lite_hf_id = DEFAULT_MMBENCH_LITE_HF_ID
 
     if args.mmbench_hf_id:
         os.environ["VOVNET_HF_DATASET_ID_MMBENCH"] = args.mmbench_hf_id
-    if args.mmbench_lite_hf_id:
-        os.environ["VOVNET_HF_DATASET_ID_MMBENCH_LITE"] = args.mmbench_lite_hf_id
+    if mmbench_lite_hf_id:
+        os.environ["VOVNET_HF_DATASET_ID_MMBENCH_LITE"] = mmbench_lite_hf_id
 
     if not args.prepare_only:
         if not args.mmbench_hf_id:
             download_mmbench(raw_root, args.lang, args.mmbench_dev_url, args.mmbench_test_url)
-        if not args.skip_mmbench_lite and not args.mmbench_lite_hf_id:
-            if not args.mmbench_lite_url:
+        if not args.skip_mmbench_lite and not mmbench_lite_hf_id:
+            if not mmbench_lite_url:
                 raise ValueError(
                     "MMBench-Lite URL missing. Set --mmbench_lite_url or VOVNET_MMBENCH_LITE_URL."
                 )
-            download_mmbench_lite(raw_root, args.mmbench_lite_url)
+            download_mmbench_lite(raw_root, mmbench_lite_url)
 
     if args.download_only:
         return
