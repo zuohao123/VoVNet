@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
@@ -68,6 +69,32 @@ class Trainer:
     def train(self, epochs: int) -> None:
         """Run the training loop."""
         global_step = 0
+        steps_per_epoch = _safe_len(self.train_loader)
+        total_steps = steps_per_epoch * epochs if steps_per_epoch is not None else None
+        world_size = max(1, int(getattr(self.accelerator, "num_processes", 1)))
+        grad_accum = max(
+            1, int(getattr(self.accelerator, "gradient_accumulation_steps", 1))
+        )
+        logger.info(
+            "Train setup: epochs=%s steps_per_epoch=%s total_steps=%s world_size=%s grad_accum=%s",
+            epochs,
+            steps_per_epoch if steps_per_epoch is not None else "n/a",
+            total_steps if total_steps is not None else "n/a",
+            world_size,
+            grad_accum,
+        )
+        train_start = time.time()
+        window_start = train_start
+        window_samples = 0
+        window_tokens = 0
+        window_batches = 0
+        window_losses: Dict[str, float] = {
+            "total_loss": 0.0,
+            "task_loss": 0.0,
+            "cost_loss": 0.0,
+            "calibration_loss": 0.0,
+            "gain_loss": 0.0,
+        }
         for epoch in range(epochs):
             self.model.train()
             for step, batch in enumerate(self.train_loader):
@@ -115,8 +142,63 @@ class Trainer:
                         actions=outputs["actions"],
                     )
 
+                batch_size = batch["input_ids"].size(0)
+                window_samples += batch_size
+                window_tokens += int(batch["input_ids"].numel())
+                window_batches += 1
+                window_losses["total_loss"] += float(losses["total_loss"].item()) * batch_size
+                window_losses["task_loss"] += float(losses["task_loss"].item()) * batch_size
+                window_losses["cost_loss"] += float(losses["cost_loss"].item()) * batch_size
+                window_losses["calibration_loss"] += float(
+                    losses["calibration_loss"].item()
+                ) * batch_size
+                window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
+
                 if global_step % self.log_every == 0:
-                    self._log_step(global_step, losses, outputs)
+                    avg_losses = {
+                        key: value / max(1, window_samples)
+                        for key, value in window_losses.items()
+                    }
+                    elapsed = time.time() - train_start
+                    step_count = global_step + 1
+                    if total_steps:
+                        progress_pct = 100.0 * step_count / total_steps
+                        eta_seconds = (total_steps - step_count) * (
+                            elapsed / max(1, step_count)
+                        )
+                    else:
+                        progress_pct = None
+                        eta_seconds = None
+                    window_elapsed = max(1e-9, time.time() - window_start)
+                    window_samples_global = window_samples * world_size
+                    window_tokens_global = window_tokens * world_size
+                    window_stats = {
+                        "samples": window_samples_global,
+                        "tokens": window_tokens_global,
+                        "batches": window_batches,
+                        "seconds": window_elapsed,
+                        "samples_s": window_samples_global / window_elapsed,
+                        "tokens_s": window_tokens_global / window_elapsed,
+                        "world_size": world_size,
+                    }
+                    progress = {
+                        "epoch": epoch + 1,
+                        "epochs": epochs,
+                        "step_in_epoch": step + 1,
+                        "steps_per_epoch": steps_per_epoch,
+                        "global_step": step_count,
+                        "total_steps": total_steps,
+                        "progress_pct": progress_pct,
+                        "eta_seconds": eta_seconds,
+                        "elapsed_seconds": elapsed,
+                    }
+                    self._log_step(avg_losses, outputs, progress, window_stats)
+                    window_start = time.time()
+                    window_samples = 0
+                    window_tokens = 0
+                    window_batches = 0
+                    for key in window_losses:
+                        window_losses[key] = 0.0
                 if global_step > 0 and global_step % self.save_every == 0:
                     self._save_checkpoint(global_step)
                 global_step += 1
@@ -259,7 +341,13 @@ class Trainer:
         logger.info("Eval metrics: %s", metrics)
         return metrics
 
-    def _log_step(self, step: int, losses: Dict[str, torch.Tensor], outputs: Dict[str, Any]) -> None:
+    def _log_step(
+        self,
+        avg_losses: Dict[str, float],
+        outputs: Dict[str, Any],
+        progress: Dict[str, Any],
+        window_stats: Dict[str, Any],
+    ) -> None:
         actions = outputs["actions"]
         action_rates = torch.bincount(actions, minlength=3).float() / actions.numel()
         action_probs = outputs.get("action_probs")
@@ -307,19 +395,53 @@ class Trainer:
                 f" gain_corr_spearman=[{coarse_spearman:.3f},{full_spearman:.3f}]"
             )
 
+        steps_per_epoch = progress.get("steps_per_epoch")
+        total_steps = progress.get("total_steps")
+        step_in_epoch = progress.get("step_in_epoch")
+        epoch = progress.get("epoch")
+        epochs = progress.get("epochs")
+        step_text = (
+            f"{step_in_epoch}/{steps_per_epoch}"
+            if steps_per_epoch is not None
+            else f"{step_in_epoch}"
+        )
+        global_text = (
+            f"{progress.get('global_step')}/{total_steps}"
+            if total_steps
+            else f"{progress.get('global_step')}"
+        )
+        progress_pct = progress.get("progress_pct")
+        progress_text = f"{progress_pct:.2f}%" if progress_pct is not None else "n/a"
+        eta_text = _format_duration(progress.get("eta_seconds"))
+        elapsed_text = _format_duration(progress.get("elapsed_seconds"))
+        lr = float(self.optimizer.param_groups[0].get("lr", 0.0))
+
         logger.info(
             (
-                "step=%s total=%.4f task_loss=%.4f cost_loss=%.4f gain_loss=%.4f "
-                "lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
+                "epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
+                "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
+                "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f avg_gain=%.4f "
+                "lr=%.6g lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
                 "vision_tokens=%.2f token_count_coarse=%.2f token_count_full=%.2f "
                 "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
                 "latency_ms=%.2f mem_peak_mb=%.2f tokens_s=%.2f%s"
             ),
-            step,
-            losses["total_loss"].item(),
-            losses["task_loss"].item(),
-            losses["cost_loss"].item(),
-            losses.get("gain_loss", torch.tensor(0.0)).item(),
+            epoch,
+            epochs,
+            step_text,
+            global_text,
+            progress_text,
+            eta_text,
+            elapsed_text,
+            window_stats["samples"],
+            window_stats["samples_s"],
+            window_stats["tokens_s"],
+            avg_losses["total_loss"],
+            avg_losses["task_loss"],
+            avg_losses["cost_loss"],
+            avg_losses.get("calibration_loss", 0.0),
+            avg_losses.get("gain_loss", 0.0),
+            lr,
             self.lambda_cost,
             action_entropy,
             action_rates.tolist(),
@@ -376,3 +498,21 @@ def _compute_ece(logits: torch.Tensor, labels: Optional[torch.Tensor]) -> float:
     probs = torch.softmax(flat_logits, dim=-1)
     ece, _ = expected_calibration_error(probs, flat_labels)
     return float(ece.item())
+
+
+def _safe_len(obj: Any) -> Optional[int]:
+    try:
+        return len(obj)
+    except TypeError:
+        return None
+
+
+def _format_duration(seconds: Optional[float]) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "n/a"
+    total_seconds = max(0, int(seconds))
+    minutes, sec = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    return f"{minutes}m{sec:02d}s"
