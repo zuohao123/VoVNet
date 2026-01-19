@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
@@ -38,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         "--skip-missing-images",
         action="store_true",
         help="Drop samples when images cannot be resolved (only when --download-images is set)",
+    )
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        default=1,
+        help="Number of threads used to download/convert images",
     )
     parser.add_argument("--export-parquet", action="store_true")
     parser.add_argument("--max_samples", type=int, default=None)
@@ -97,30 +105,63 @@ def iter_records(
     max_samples: Optional[int] = None,
     skip_missing_images: bool = False,
     stats: Optional[dict] = None,
+    download_workers: int = 1,
 ) -> Iterable[dict]:
     count = 0
-    for ex in dataset:
-        if max_samples is not None and count >= max_samples:
-            break
+
+    def _process(ex: dict) -> tuple[Optional[dict], Optional[Exception], bool]:
         try:
             unified = adapter.normalize_example(ex, split=split)
             image_info = build_image_entry(
                 adapter, ex, image_dir, download_images, unified.sample_id
             )
             if skip_missing_images and download_images and image_info is None:
-                if stats is not None:
-                    stats["skipped_missing_images"] = stats.get("skipped_missing_images", 0) + 1
-                    stats["seen"] = stats.get("seen", 0) + 1
-                continue
+                return None, None, True
             unified.image = image_info
-            if stats is not None:
-                stats["kept"] = stats.get("kept", 0) + 1
-                stats["seen"] = stats.get("seen", 0) + 1
-            yield unified.to_dict()
-            count += 1
+            return unified.to_dict(), None, False
         except Exception as exc:  # pragma: no cover - runtime data issues
-            logger.warning("Failed to normalize sample: %s", exc)
-            continue
+            return None, exc, False
+
+    def _record_stats(missing: bool, kept: bool) -> None:
+        if stats is None:
+            return
+        stats["seen"] = stats.get("seen", 0) + 1
+        if missing:
+            stats["skipped_missing_images"] = stats.get("skipped_missing_images", 0) + 1
+        if kept:
+            stats["kept"] = stats.get("kept", 0) + 1
+
+    if download_workers <= 1:
+        for ex in dataset:
+            if max_samples is not None and count >= max_samples:
+                break
+            record, err, missing = _process(ex)
+            if err is not None:
+                logger.warning("Failed to normalize sample: %s", err)
+                _record_stats(missing=False, kept=False)
+                continue
+            if missing:
+                _record_stats(missing=True, kept=False)
+                continue
+            _record_stats(missing=False, kept=True)
+            yield record
+            count += 1
+        return
+
+    iterator = dataset
+    if max_samples is not None:
+        iterator = islice(iterator, max_samples)
+    with ThreadPoolExecutor(max_workers=download_workers) as executor:
+        for record, err, missing in executor.map(_process, iterator):
+            if err is not None:
+                logger.warning("Failed to normalize sample: %s", err)
+                _record_stats(missing=False, kept=False)
+                continue
+            if missing:
+                _record_stats(missing=True, kept=False)
+                continue
+            _record_stats(missing=False, kept=True)
+            yield record
 
 
 def prepare_split(
@@ -130,6 +171,7 @@ def prepare_split(
     output_dir: Path,
     download_images: bool,
     skip_missing_images: bool,
+    download_workers: int,
     max_samples: Optional[int],
     seed: int,
     export_parquet_flag: bool,
@@ -159,6 +201,7 @@ def prepare_split(
         max_samples,
         skip_missing_images=skip_missing_images,
         stats=stats,
+        download_workers=download_workers,
     )
     written = export_jsonl(
         record_iter,
@@ -177,6 +220,7 @@ def prepare_split(
                 download_images,
                 max_samples,
                 skip_missing_images=skip_missing_images,
+                download_workers=download_workers,
             ),
             parquet_path,
             total=total,
@@ -210,6 +254,7 @@ def main() -> None:
             output_dir=output_dir,
             download_images=args.download_images,
             skip_missing_images=args.skip_missing_images,
+            download_workers=args.download_workers,
             max_samples=args.max_samples,
             seed=args.seed,
             export_parquet_flag=args.export_parquet,
