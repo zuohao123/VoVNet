@@ -8,6 +8,26 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
+def _ensure_torch_compiler_compat() -> None:
+    """Backfill torch.compiler.is_compiling for older torch releases."""
+    compiler = getattr(torch, "compiler", None)
+    if compiler is None:
+        class _CompilerShim:
+            @staticmethod
+            def is_compiling() -> bool:
+                return False
+
+        torch.compiler = _CompilerShim()  # type: ignore[attr-defined]
+        return
+    if not hasattr(compiler, "is_compiling"):
+        def _is_compiling() -> bool:
+            return False
+
+        setattr(compiler, "is_compiling", _is_compiling)
+
+
+_ensure_torch_compiler_compat()
+
 import transformers
 from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
