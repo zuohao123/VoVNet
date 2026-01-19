@@ -415,13 +415,14 @@ class Trainer:
         eta_text = _format_duration(progress.get("eta_seconds"))
         elapsed_text = _format_duration(progress.get("elapsed_seconds"))
         lr = float(self.optimizer.param_groups[0].get("lr", 0.0))
+        budget_text = _format_budget(getattr(self.model, "vision_budget", None))
 
         logger.info(
             (
                 "epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
                 "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
                 "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f avg_gain=%.4f "
-                "lr=%.6g lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
+                "lr=%.6g budget=%s lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
                 "vision_tokens=%.2f token_count_coarse=%.2f token_count_full=%.2f "
                 "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
                 "latency_ms=%.2f mem_peak_mb=%.2f tokens_s=%.2f%s"
@@ -442,6 +443,7 @@ class Trainer:
             avg_losses.get("calibration_loss", 0.0),
             avg_losses.get("gain_loss", 0.0),
             lr,
+            budget_text,
             self.lambda_cost,
             action_entropy,
             action_rates.tolist(),
@@ -516,3 +518,20 @@ def _format_duration(seconds: Optional[float]) -> str:
     if hours > 0:
         return f"{hours}h{minutes:02d}m{sec:02d}s"
     return f"{minutes}m{sec:02d}s"
+
+
+def _format_budget(budget: Any) -> str:
+    if budget is None:
+        return "n/a"
+    coarse_long = getattr(budget, "coarse_long_side", None)
+    full_long = getattr(budget, "full_long_side", None)
+    coarse_pixels = getattr(budget, "coarse_max_pixels", None)
+    full_pixels = getattr(budget, "full_max_pixels", None)
+    patch = getattr(budget, "patch_size", None)
+    token_cap = getattr(budget, "token_cap", None)
+    token_cap_text = token_cap if token_cap is not None else "none"
+    return (
+        f"coarse_long={coarse_long} full_long={full_long} "
+        f"coarse_pixels={coarse_pixels} full_pixels={full_pixels} "
+        f"patch={patch} token_cap={token_cap_text}"
+    )

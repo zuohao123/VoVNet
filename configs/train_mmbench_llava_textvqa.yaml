@@ -1,7 +1,7 @@
-# Training on MMBench dev + LLaVA-Instruct (mapped to COCO2014).
+# Training on MMBench dev + LLaVA-Instruct + TextVQA.
 
 data:
-  train_jsonl: "data/processed/mmbench_llava/mmbench_llava_train.jsonl"
+  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_test.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 

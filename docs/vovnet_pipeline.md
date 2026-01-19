@@ -141,6 +141,27 @@ return {logits, action_logits, action_probs, actions,
 - 训练时：`Trainer` 会将 `logits` 与 `labels` 计算任务损失，再加成本损失。
 - 评估时：`Trainer.evaluate` 仅计算任务指标，但仍可读取动作分布与成本统计。
 
+## 8. 训练日志字段说明（中文）
+
+训练日志每隔 `log_every` 步打印一次（当前配置为 3），字段含义如下：
+
+- `epoch/step/global_step`：当前轮次、当前轮内步、全局步数。
+- `progress/eta/elapsed`：训练进度、预计剩余时间、已用时间。
+- `window_samples/window_samples_s/window_tokens_s`：当前日志窗口内样本数、样本/秒、token/秒。
+- `avg_total/avg_task/avg_cost/avg_cal/avg_gain`：窗口内平均总损失、任务损失、成本损失、校准损失、增益损失。
+- `lr`：当前学习率。
+- `budget`：视觉预算配置（coarse/full 的长边、像素上限、patch 大小、token 上限）。
+- `lambda_cost`：成本损失权重。
+- `action_entropy`：动作概率的平均熵，越大表示策略越不确定。
+- `action_ratio`：动作比例，顺序为 `[NO_VISION, COARSE_VISION, FULL_VISION]`。
+- `vision_tokens`：本批次平均视觉 token 数估计。
+- `token_count_coarse/full`：本批次平均 coarse/full 视觉 token 数估计。
+- `expected_cost`：期望成本（基于动作概率与 token 估计）。
+- `flops_proxy`：粗略算力代理指标（vision_tokens × seq_len）。
+- `ece`：token 级别校准误差（越小越好）。
+- `latency_ms/mem_peak_mb/tokens_s`：单步延迟、显存峰值、token 吞吐（需开启 profiling）。
+- `gain_corr_*`：增益预测与真实增益的相关性（仅在启用 gain supervision 时出现）。
+
 ---
 
 如需我补充 **更具体的 tensor shape、模型前向/生成接口兼容性** 或 **将流程与损失函数/日志指标对齐的图示**，告诉我即可。
