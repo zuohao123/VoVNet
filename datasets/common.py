@@ -38,6 +38,16 @@ def _get_env_image_roots() -> List[Path]:
                     _MISSING_ROOTS_CACHE.add(key)
                     logger.warning("Image root does not exist: %s", root)
             roots.append(root)
+    else:
+        repo_root = Path(__file__).resolve().parents[1]
+        candidates = [
+            repo_root / "data" / "images" / "coco2014",
+            repo_root / "data" / "images" / "coco2017",
+            repo_root,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                roots.append(candidate)
     _IMAGE_ROOTS_CACHE = roots
     return roots
 
