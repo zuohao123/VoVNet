@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         help="output directory (default: data/processed/<dataset>)",
     )
     parser.add_argument("--download-images", action="store_true")
+    parser.add_argument(
+        "--skip-missing-images",
+        action="store_true",
+        help="Drop samples when images cannot be resolved (only when --download-images is set)",
+    )
     parser.add_argument("--export-parquet", action="store_true")
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -90,6 +95,8 @@ def iter_records(
     image_dir: Path,
     download_images: bool,
     max_samples: Optional[int] = None,
+    skip_missing_images: bool = False,
+    stats: Optional[dict] = None,
 ) -> Iterable[dict]:
     count = 0
     for ex in dataset:
@@ -100,7 +107,15 @@ def iter_records(
             image_info = build_image_entry(
                 adapter, ex, image_dir, download_images, unified.sample_id
             )
+            if skip_missing_images and download_images and image_info is None:
+                if stats is not None:
+                    stats["skipped_missing_images"] = stats.get("skipped_missing_images", 0) + 1
+                    stats["seen"] = stats.get("seen", 0) + 1
+                continue
             unified.image = image_info
+            if stats is not None:
+                stats["kept"] = stats.get("kept", 0) + 1
+                stats["seen"] = stats.get("seen", 0) + 1
             yield unified.to_dict()
             count += 1
         except Exception as exc:  # pragma: no cover - runtime data issues
@@ -114,6 +129,7 @@ def prepare_split(
     subset: Optional[str],
     output_dir: Path,
     download_images: bool,
+    skip_missing_images: bool,
     max_samples: Optional[int],
     seed: int,
     export_parquet_flag: bool,
@@ -133,8 +149,19 @@ def prepare_split(
 
     image_dir = Path("data/images") / adapter.name
     jsonl_path = output_dir / f"{adapter.name}_{split}.jsonl"
-    export_jsonl(
-        iter_records(adapter, dataset, split, image_dir, download_images, max_samples),
+    stats: dict = {}
+    record_iter = iter_records(
+        adapter,
+        dataset,
+        split,
+        image_dir,
+        download_images,
+        max_samples,
+        skip_missing_images=skip_missing_images,
+        stats=stats,
+    )
+    written = export_jsonl(
+        record_iter,
         jsonl_path,
         total=total,
     )
@@ -142,12 +169,27 @@ def prepare_split(
     if export_parquet_flag:
         parquet_path = output_dir / f"{adapter.name}_{split}.parquet"
         export_parquet(
-            iter_records(adapter, dataset, split, image_dir, download_images, max_samples),
+            iter_records(
+                adapter,
+                dataset,
+                split,
+                image_dir,
+                download_images,
+                max_samples,
+                skip_missing_images=skip_missing_images,
+            ),
             parquet_path,
             total=total,
         )
 
-    logger.info("Saved split %s to %s", split, jsonl_path)
+    skipped = stats.get("skipped_missing_images", 0)
+    logger.info(
+        "Saved split %s to %s (written=%s skipped_missing_images=%s)",
+        split,
+        jsonl_path,
+        written,
+        skipped,
+    )
 
 
 def main() -> None:
@@ -167,6 +209,7 @@ def main() -> None:
             subset=args.subset,
             output_dir=output_dir,
             download_images=args.download_images,
+            skip_missing_images=args.skip_missing_images,
             max_samples=args.max_samples,
             seed=args.seed,
             export_parquet_flag=args.export_parquet,

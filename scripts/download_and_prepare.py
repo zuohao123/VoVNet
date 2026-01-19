@@ -87,6 +87,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download_images", dest="download_images", action="store_true")
     parser.add_argument("--no_download_images", dest="download_images", action="store_false")
     parser.set_defaults(download_images=True)
+    parser.add_argument(
+        "--skip-missing-images",
+        action="store_true",
+        help="Drop samples when images cannot be resolved (only when downloading images)",
+    )
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--export_parquet", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
@@ -159,6 +164,7 @@ def prepare_dataset(
     subset: Optional[str],
     output_root: Path,
     download_images: bool,
+    skip_missing_images: bool,
     seed: int,
     export_parquet: bool,
     streaming: bool,
@@ -173,6 +179,7 @@ def prepare_dataset(
             subset=subset,
             output_dir=output_dir,
             download_images=download_images,
+            skip_missing_images=skip_missing_images,
             max_samples=None,
             seed=seed,
             export_parquet_flag=export_parquet,
@@ -239,6 +246,7 @@ def main() -> None:
         subset=args.lang,
         output_root=output_root,
         download_images=args.download_images,
+        skip_missing_images=args.skip_missing_images,
         seed=args.seed,
         export_parquet=args.export_parquet,
         streaming=args.streaming,
@@ -250,6 +258,7 @@ def main() -> None:
             subset=args.lang,
             output_root=output_root,
             download_images=args.download_images,
+            skip_missing_images=args.skip_missing_images,
             seed=args.seed,
             export_parquet=args.export_parquet,
             streaming=args.streaming,
@@ -260,6 +269,7 @@ def main() -> None:
         subset=None,
         output_root=output_root,
         download_images=args.download_images,
+        skip_missing_images=args.skip_missing_images,
         seed=args.seed,
         export_parquet=args.export_parquet,
         streaming=args.streaming,
@@ -270,6 +280,7 @@ def main() -> None:
         subset=None,
         output_root=output_root,
         download_images=args.download_images,
+        skip_missing_images=args.skip_missing_images,
         seed=args.seed,
         export_parquet=args.export_parquet,
         streaming=args.streaming,
