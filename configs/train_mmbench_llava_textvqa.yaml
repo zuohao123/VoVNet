@@ -7,8 +7,8 @@ data:
 
 training:
   epochs: 2
-  per_device_batch_size: 2
-  gradient_accumulation: 2
+  per_device_batch_size: 1
+  gradient_accumulation: 4
   log_every: 3
   mixed_precision: "fp16"
   deepspeed_stage: 2
