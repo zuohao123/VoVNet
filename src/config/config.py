@@ -150,6 +150,7 @@ class Config:
         self._validate()
 
     def _validate(self) -> None:
+        _coerce_types(self)
         if self.training.deepspeed_stage not in (0, 2, 3):
             raise ValueError("deepspeed_stage must be 0, 2, or 3")
         if self.policy.policy_mode not in ("logits", "gain"):
@@ -229,3 +230,128 @@ def _update_dataclass(obj: Any, updates: Dict[str, Any]) -> None:
             _update_dataclass(current, value)
         else:
             setattr(obj, key, value)
+
+
+def _to_float(value: Any, field: str, allow_none: bool = False) -> Any:
+    if value is None:
+        return None if allow_none else value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"none", "null", ""}:
+            return None if allow_none else value
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise ValueError(f"{field} must be a float") from exc
+    return value
+
+
+def _to_int(value: Any, field: str, allow_none: bool = False) -> Any:
+    if value is None:
+        return None if allow_none else value
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"none", "null", ""}:
+            return None if allow_none else value
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError as exc:
+                raise ValueError(f"{field} must be an int") from exc
+    return value
+
+
+def _to_float_list(value: Any, field: str) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of floats")
+    return [float(item) for item in value]
+
+
+def _to_float_list_list(value: Any, field: str) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of float lists")
+    return [_to_float_list(item, field) for item in value]
+
+
+def _coerce_types(cfg: Config) -> None:
+    cfg.training.lr = _to_float(cfg.training.lr, "training.lr")
+    cfg.training.weight_decay = _to_float(cfg.training.weight_decay, "training.weight_decay")
+    cfg.training.warmup_steps = _to_int(cfg.training.warmup_steps, "training.warmup_steps")
+    cfg.training.max_grad_norm = _to_float(cfg.training.max_grad_norm, "training.max_grad_norm")
+    cfg.training.per_device_batch_size = _to_int(
+        cfg.training.per_device_batch_size, "training.per_device_batch_size"
+    )
+    cfg.training.gradient_accumulation = _to_int(
+        cfg.training.gradient_accumulation, "training.gradient_accumulation"
+    )
+    cfg.training.epochs = _to_int(cfg.training.epochs, "training.epochs")
+    cfg.training.log_every = _to_int(cfg.training.log_every, "training.log_every")
+    cfg.training.save_every = _to_int(cfg.training.save_every, "training.save_every")
+    cfg.training.deepspeed_stage = _to_int(cfg.training.deepspeed_stage, "training.deepspeed_stage")
+    cfg.training.seed = _to_int(cfg.training.seed, "training.seed")
+
+    cfg.eval.batch_size = _to_int(cfg.eval.batch_size, "eval.batch_size")
+    cfg.eval.max_new_tokens = _to_int(cfg.eval.max_new_tokens, "eval.max_new_tokens")
+    cfg.eval.num_beams = _to_int(cfg.eval.num_beams, "eval.num_beams")
+    cfg.eval.temperature = _to_float(cfg.eval.temperature, "eval.temperature")
+
+    cfg.policy.gumbel_tau = _to_float(cfg.policy.gumbel_tau, "policy.gumbel_tau")
+    cfg.policy.cost_scale = _to_float(cfg.policy.cost_scale, "policy.cost_scale")
+    cfg.policy.cost_c1 = _to_float(cfg.policy.cost_c1, "policy.cost_c1")
+    cfg.policy.cost_c2 = _to_float(cfg.policy.cost_c2, "policy.cost_c2")
+    cfg.policy.lambda_cost = _to_float(cfg.policy.lambda_cost, "policy.lambda_cost")
+    cfg.policy.calibration_lambda = _to_float(
+        cfg.policy.calibration_lambda, "policy.calibration_lambda"
+    )
+    cfg.policy.gain_loss_weight = _to_float(
+        cfg.policy.gain_loss_weight, "policy.gain_loss_weight"
+    )
+    cfg.policy.gain_margin = _to_float(cfg.policy.gain_margin, "policy.gain_margin")
+    cfg.policy.baseline_threshold = _to_float(
+        cfg.policy.baseline_threshold, "policy.baseline_threshold"
+    )
+    cfg.policy.baseline_seed = _to_int(
+        cfg.policy.baseline_seed, "policy.baseline_seed", allow_none=True
+    )
+    cfg.policy.baseline_target_ratios = _to_float_list(
+        cfg.policy.baseline_target_ratios, "policy.baseline_target_ratios"
+    )
+    cfg.policy.baseline_bucket_ratios = _to_float_list_list(
+        cfg.policy.baseline_bucket_ratios, "policy.baseline_bucket_ratios"
+    )
+    cfg.policy.baseline_bucket_thresholds = _to_float_list(
+        cfg.policy.baseline_bucket_thresholds, "policy.baseline_bucket_thresholds"
+    )
+
+    cfg.vision_budget.coarse_long_side = _to_int(
+        cfg.vision_budget.coarse_long_side, "vision_budget.coarse_long_side"
+    )
+    cfg.vision_budget.full_long_side = _to_int(
+        cfg.vision_budget.full_long_side, "vision_budget.full_long_side"
+    )
+    cfg.vision_budget.coarse_max_pixels = _to_int(
+        cfg.vision_budget.coarse_max_pixels, "vision_budget.coarse_max_pixels"
+    )
+    cfg.vision_budget.full_max_pixels = _to_int(
+        cfg.vision_budget.full_max_pixels, "vision_budget.full_max_pixels"
+    )
+    cfg.vision_budget.patch_size = _to_int(
+        cfg.vision_budget.patch_size, "vision_budget.patch_size"
+    )
+    cfg.vision_budget.token_cap = _to_int(
+        cfg.vision_budget.token_cap, "vision_budget.token_cap", allow_none=True
+    )
