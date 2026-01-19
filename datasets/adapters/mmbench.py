@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from PIL import Image
 
-from ..common import AnswerInfo, MetaInfo, UnifiedExample
+from ..common import AnswerInfo, MetaInfo, UnifiedExample, resolve_image_field
 from .local_utils import (
     coerce_str,
     extract_letter_choices,
@@ -104,11 +104,40 @@ class MMBenchAdapter:
         )
 
     def get_image(self, ex: Dict[str, Any]) -> Optional[Image.Image]:
-        return resolve_image_from_record(
+        fields = [
+            "image",
+            "image_path",
+            "image_file",
+            "image_id",
+            "img",
+            "img_path",
+            "image_url",
+        ]
+        image = resolve_image_from_record(
             ex,
-            fields=["image", "image_path", "image_file", "image_id", "img", "img_path", "image_url"],
+            fields=fields,
             image_root=self.image_root,
         )
+        if image is not None:
+            return image
+
+        # Fallback: some MMBench variants store COCO ids without filenames.
+        value = first_non_empty(ex, fields)
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+        coco_id: Optional[int] = None
+        if isinstance(value, int):
+            coco_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            coco_id = int(value.strip())
+        if coco_id is None:
+            return None
+        for prefix in ("COCO_train2014_", "COCO_val2014_"):
+            candidate = f"{prefix}{coco_id:012d}.jpg"
+            image = resolve_image_field(candidate, image_root=self.image_root)
+            if image is not None:
+                return image
+        return None
 
 
 class MMBenchLiteAdapter(MMBenchAdapter):
