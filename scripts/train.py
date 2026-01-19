@@ -266,6 +266,7 @@ def main() -> None:
         gain_loss_type=cfg.policy.gain_loss_type,
         gain_loss_weight=cfg.policy.gain_loss_weight,
         gain_margin=cfg.policy.gain_margin,
+        baseline_name=cfg.policy.baseline_name,
     )
     trainer.train(cfg.training.epochs)
 

@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from src.baselines import normalize_baseline_name, resolve_baseline_actions
 from src.eval.metrics import exact_match_score
 from src.training.losses import compute_total_loss
 from src.utils.logging import setup_logging
@@ -44,6 +45,7 @@ class Trainer:
         gain_loss_type: str = "mse",
         gain_loss_weight: float = 0.0,
         gain_margin: float = 0.0,
+        baseline_name: Optional[str] = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -65,6 +67,7 @@ class Trainer:
         self.gain_loss_type = gain_loss_type
         self.gain_loss_weight = gain_loss_weight
         self.gain_margin = gain_margin
+        self.baseline_name = normalize_baseline_name(baseline_name)
 
     def train(self, epochs: int) -> None:
         """Run the training loop."""
@@ -83,6 +86,10 @@ class Trainer:
             world_size,
             grad_accum,
         )
+        if self.baseline_name:
+            logger.info("Baseline mode enabled: %s", self.baseline_name)
+        if self.baseline_name in {"uncertainty_threshold", "random_policy_matched"}:
+            raise RuntimeError(f"{self.baseline_name} baseline is eval-only; skip training")
         train_start = time.time()
         window_start = train_start
         window_samples = 0
@@ -100,14 +107,28 @@ class Trainer:
             for step, batch in enumerate(self.train_loader):
                 if self.train_profiler.enabled:
                     self.train_profiler.start()
+                batch_size = batch["input_ids"].size(0)
+                actions, _, drop_images = resolve_baseline_actions(
+                    self.baseline_name, batch_size, batch["input_ids"].device
+                )
                 with self.accelerator.accumulate(self.model):
-                    outputs = self.model(
-                        input_ids=batch["input_ids"],
-                        attention_mask=batch["attention_mask"],
-                        images=batch.get("images"),
-                        labels=batch.get("labels"),
-                        compute_gain=self.gain_supervision,
-                    )
+                    if actions is None:
+                        outputs = self.model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch["attention_mask"],
+                            images=batch.get("images"),
+                            labels=batch.get("labels"),
+                            compute_gain=self.gain_supervision,
+                        )
+                    else:
+                        images = None if drop_images else batch.get("images")
+                        outputs = self.model.forward_with_actions(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch["attention_mask"],
+                            images=images,
+                            actions=actions,
+                            labels=batch.get("labels"),
+                        )
                     losses = compute_total_loss(
                         outputs["logits"],
                         outputs.get("labels"),
@@ -142,7 +163,6 @@ class Trainer:
                         actions=outputs["actions"],
                     )
 
-                batch_size = batch["input_ids"].size(0)
                 window_samples += batch_size
                 window_tokens += int(batch["input_ids"].numel())
                 window_batches += 1
@@ -212,8 +232,11 @@ class Trainer:
         total_loss = 0.0
         total_acc = 0.0
         total_count = 0
+        total_cost = 0.0
+        total_vision_tokens = 0.0
         total_ece = 0.0
         total_ece_count = 0
+        action_counts = torch.zeros(len(Action), dtype=torch.long)
         base_acc = 0.0
         base_cost = 0.0
         final_cost = 0.0
@@ -225,18 +248,32 @@ class Trainer:
             self.eval_profiler.reset()
 
         tokenizer = getattr(self.model.base_vlm, "tokenizer", None)
+        action_label: Optional[str] = None
         with torch.no_grad():
             for batch in self.eval_loader or []:
                 if self.eval_profiler.enabled:
                     self.eval_profiler.start()
-                outputs = self.model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    images=batch.get("images"),
-                    labels=batch.get("labels"),
+                batch_size = batch["input_ids"].size(0)
+                actions, action_label, drop_images = resolve_baseline_actions(
+                    self.baseline_name, batch_size, batch["input_ids"].device
                 )
+                if actions is None:
+                    outputs = self.model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        images=batch.get("images"),
+                        labels=batch.get("labels"),
+                    )
+                else:
+                    images = None if drop_images else batch.get("images")
+                    outputs = self.model.forward_with_actions(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        images=images,
+                        actions=actions,
+                        labels=batch.get("labels"),
+                    )
                 if self.eval_profiler.enabled:
-                    batch_size = batch["input_ids"].size(0)
                     seq_len = batch["input_ids"].size(1)
                     self.eval_profiler.stop(
                         batch_size=batch_size,
@@ -250,6 +287,13 @@ class Trainer:
                     self.lambda_cost,
                 )
                 total_loss += losses["task_loss"].item() * batch["input_ids"].size(0)
+                total_cost += outputs["expected_cost"].sum().item()
+                vision_tokens = outputs.get("vision_tokens")
+                if vision_tokens is not None:
+                    total_vision_tokens += vision_tokens.sum().item()
+                action_counts += torch.bincount(
+                    outputs["actions"].detach().cpu(), minlength=len(Action)
+                )
                 labels = batch.get("labels")
                 if labels is not None:
                     mask = labels.ne(-100)
@@ -316,11 +360,19 @@ class Trainer:
 
         avg_loss = total_loss / max(1, total_count or 1)
         avg_acc = total_acc / max(1, total_count)
+        avg_cost = total_cost / max(1, total_count)
+        avg_vision_tokens = total_vision_tokens / max(1, total_count)
+        action_rates = (action_counts.float() / max(1, total_count)).tolist()
         metrics = {
             "val_loss": avg_loss,
             "val_accuracy": avg_acc,
             "val_ece": total_ece / max(1, total_ece_count),
+            "avg_cost": avg_cost,
+            "avg_vision_token_count": avg_vision_tokens,
+            "action_ratio": action_rates,
         }
+        if self.baseline_name:
+            metrics["action"] = action_label
         if total_count > 0:
             base_accuracy = base_acc / max(1, total_count)
             metrics["fallback"] = {
@@ -337,7 +389,10 @@ class Trainer:
                 "cost_increase": (final_cost - base_cost) / max(1, total_count),
             }
         if self.eval_profiler.enabled:
-            metrics["profile"] = self.eval_profiler.summary()
+            profile = self.eval_profiler.summary()
+            metrics["profile"] = profile
+            metrics["latency_stats"] = profile.get("overall", {}).get("latency_ms", {})
+            metrics["mem_peak"] = profile.get("overall", {}).get("mem_mb", {})
         logger.info("Eval metrics: %s", metrics)
         return metrics
 

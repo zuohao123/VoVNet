@@ -19,3 +19,18 @@ def select_actions(
     actions = torch.where(uncertainty <= t2, Action.COARSE_VISION, actions)
     actions = torch.where(uncertainty <= t1, Action.NO_VISION, actions)
     return actions
+
+
+def select_actions_binary(
+    uncertainty: torch.Tensor,
+    threshold: float,
+    high_action: Action = Action.FULL_VISION,
+) -> torch.Tensor:
+    """Select actions with a single threshold.
+
+    If uncertainty < threshold: NO_VISION
+    Else: high_action (FULL_VISION by default).
+    """
+    actions = torch.full_like(uncertainty, int(high_action), dtype=torch.long)
+    actions = torch.where(uncertainty < float(threshold), Action.NO_VISION, actions)
+    return actions

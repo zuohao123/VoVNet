@@ -32,6 +32,14 @@ class PolicyConfig:
     """VoV policy settings."""
 
     vow_hidden_dim: int = 256
+    baseline_name: str | None = None
+    baseline_uncertainty: str = "entropy"
+    baseline_threshold: float = 0.5
+    baseline_vision: str = "full"
+    baseline_seed: int | None = None
+    baseline_target_ratios: List[float] | None = None
+    baseline_bucket_ratios: List[List[float]] | None = None
+    baseline_bucket_thresholds: List[float] | None = None
     gumbel_tau: float = 1.0
     use_straight_through: bool = True
     eval_sample: bool = False
@@ -148,6 +156,58 @@ class Config:
             raise ValueError("policy_mode must be logits or gain")
         if self.policy.fallback_mode not in ("none", "coarse", "full"):
             raise ValueError("fallback_mode must be none, coarse, or full")
+        baseline = self.policy.baseline_name
+        if baseline is not None:
+            normalized = baseline.strip().lower()
+            if normalized and normalized not in {
+                "always_full",
+                "full",
+                "always_coarse",
+                "coarse",
+                "no_vision",
+                "no_vision_only",
+                "no",
+                "uncertainty_threshold",
+                "uncertainty",
+                "threshold",
+                "random_policy_matched",
+                "random_matched",
+                "none",
+                "null",
+            }:
+                raise ValueError(
+                    "baseline_name must be always_full, always_coarse, no_vision, "
+                    "uncertainty_threshold, random_policy_matched, or null"
+                )
+        uncertainty = self.policy.baseline_uncertainty.strip().lower()
+        if uncertainty not in {"entropy", "margin"}:
+            raise ValueError("baseline_uncertainty must be entropy or margin")
+        baseline_vision = self.policy.baseline_vision.strip().lower()
+        if baseline_vision not in {"full", "coarse"}:
+            raise ValueError("baseline_vision must be full or coarse")
+        if baseline is not None:
+            normalized = baseline.strip().lower()
+            if normalized in {"random_policy_matched", "random_matched"}:
+                ratios = self.policy.baseline_target_ratios
+                bucket_ratios = self.policy.baseline_bucket_ratios
+                if not bucket_ratios and not ratios:
+                    raise ValueError(
+                        "random_policy_matched requires baseline_target_ratios or baseline_bucket_ratios"
+                    )
+                if ratios is not None and len(ratios) != 3:
+                    raise ValueError("baseline_target_ratios must have 3 values")
+                if bucket_ratios is not None:
+                    if len(bucket_ratios) != 3:
+                        raise ValueError("baseline_bucket_ratios must have 3 buckets")
+                    for bucket in bucket_ratios:
+                        if len(bucket) != 3:
+                            raise ValueError("each bucket ratio must have 3 values")
+                thresholds = self.policy.baseline_bucket_thresholds
+                if thresholds is not None:
+                    if len(thresholds) != 2:
+                        raise ValueError("baseline_bucket_thresholds must have 2 values")
+                    if thresholds[0] >= thresholds[1]:
+                        raise ValueError("baseline_bucket_thresholds must be increasing")
         if self.policy.gain_loss_type not in (
             "mse",
             "huber",

@@ -13,6 +13,14 @@ model:
 
 policy:
   vow_hidden_dim: 256
+  baseline_name: null
+  baseline_uncertainty: "entropy"
+  baseline_threshold: 0.5
+  baseline_vision: "full"
+  baseline_seed: null
+  baseline_target_ratios: null
+  baseline_bucket_ratios: null
+  baseline_bucket_thresholds: null
   gumbel_tau: 1.0
   use_straight_through: true
   eval_sample: false

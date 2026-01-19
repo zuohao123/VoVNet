@@ -70,6 +70,14 @@ def _evaluate_single_process(
                     metric_fn=metric_fn,
                     cost_weight=value,
                     profile=cfg.eval.profile,
+                    baseline_name=cfg.policy.baseline_name,
+                    baseline_threshold=cfg.policy.baseline_threshold,
+                    baseline_uncertainty=cfg.policy.baseline_uncertainty,
+                    baseline_vision=cfg.policy.baseline_vision,
+                    baseline_seed=cfg.policy.baseline_seed or cfg.training.seed,
+                    baseline_target_ratios=cfg.policy.baseline_target_ratios,
+                    baseline_bucket_ratios=cfg.policy.baseline_bucket_ratios,
+                    baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
                 )
                 metrics["lambda_cost"] = value
                 results.append(metrics)
@@ -80,6 +88,14 @@ def _evaluate_single_process(
                 metric_fn=metric_fn,
                 cost_weight=None,
                 profile=cfg.eval.profile,
+                baseline_name=cfg.policy.baseline_name,
+                baseline_threshold=cfg.policy.baseline_threshold,
+                baseline_uncertainty=cfg.policy.baseline_uncertainty,
+                baseline_vision=cfg.policy.baseline_vision,
+                baseline_seed=cfg.policy.baseline_seed or cfg.training.seed,
+                baseline_target_ratios=cfg.policy.baseline_target_ratios,
+                baseline_bucket_ratios=cfg.policy.baseline_bucket_ratios,
+                baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
             )
             metrics["lambda_cost"] = 0.0
             results = [metrics]
