@@ -582,15 +582,37 @@ class VoVNet(nn.Module):
     ) -> Tuple[Optional[Tensor], Tensor]:
         processor = model.processor
         if processor is not None:
-            outputs = processor(images=images, return_tensors="pt")
-            pixel_values = outputs.get("pixel_values")
-            token_counts = self._infer_token_counts(
-                outputs=outputs,
-                pixel_values=pixel_values,
-                batch_size=len(images),
-                model=model,
-            )
-            return pixel_values, token_counts
+            outputs = None
+            try:
+                outputs = processor(images=images, return_tensors="pt")
+            except Exception:
+                image_processor = getattr(processor, "image_processor", None) or getattr(
+                    processor, "vision_processor", None
+                )
+                if image_processor is not None:
+                    outputs = image_processor(images=images, return_tensors="pt")
+                else:
+                    try:
+                        outputs = processor(
+                            text=[""] * len(images), images=images, return_tensors="pt"
+                        )
+                    except Exception:
+                        outputs = None
+
+            if outputs is not None:
+                pixel_values = (
+                    outputs.get("pixel_values")
+                    if hasattr(outputs, "get")
+                    else getattr(outputs, "pixel_values", None)
+                )
+                if pixel_values is not None:
+                    token_counts = self._infer_token_counts(
+                        outputs=outputs,
+                        pixel_values=pixel_values,
+                        batch_size=len(images),
+                        model=model,
+                    )
+                    return pixel_values, token_counts
 
         arrays = [np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0 for img in images]
         tensors = [torch.from_numpy(arr).permute(2, 0, 1) for arr in arrays]
