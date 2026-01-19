@@ -10,4 +10,5 @@ training:
   per_device_batch_size: 2
   gradient_accumulation: 2
   log_every: 3
+  mixed_precision: "fp16"
   deepspeed_stage: 2
