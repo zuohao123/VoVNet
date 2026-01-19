@@ -5,10 +5,14 @@ data:
   eval_jsonl: "data/processed/mmbench/mmbench_test.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
+model:
+  torch_dtype: "float16"
+
 training:
   epochs: 2
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 3
   mixed_precision: "fp16"
+  gradient_checkpointing: true
   deepspeed_stage: 2
