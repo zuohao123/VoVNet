@@ -13,6 +13,20 @@ def _blank_image() -> Image.Image:
     return Image.new("RGB", (1, 1), color=0)
 
 
+def _get_image_token(tokenizer: PreTrainedTokenizerBase) -> Optional[str]:
+    if hasattr(tokenizer, "image_token"):
+        return getattr(tokenizer, "image_token")
+    if hasattr(tokenizer, "image_token_id"):
+        token = tokenizer.convert_ids_to_tokens(getattr(tokenizer, "image_token_id"))
+        if token is not None:
+            return token
+    tokens = getattr(tokenizer, "additional_special_tokens", None) or []
+    for token in tokens:
+        if "image" in token.lower():
+            return token
+    return None
+
+
 @dataclass
 class VLMDataCollator:
     """Collator that builds LM-style inputs with optional images."""
@@ -24,7 +38,13 @@ class VLMDataCollator:
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         questions = [item.get("question", "") for item in batch]
         answers = [item.get("answer", "") for item in batch]
-        prompts = [self.prompt_template.format(question=q) for q in questions]
+        image_token = _get_image_token(self.tokenizer)
+        prompts = []
+        for q in questions:
+            prompt = self.prompt_template.format(question=q)
+            if image_token and image_token not in prompt:
+                prompt = f"{image_token}\n{prompt}".strip()
+            prompts.append(prompt)
         full_texts = [f"{p} {a}".strip() for p, a in zip(prompts, answers)]
 
         encoded = self.tokenizer(

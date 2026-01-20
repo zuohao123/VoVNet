@@ -635,6 +635,23 @@ class VoVNet(nn.Module):
                 if pixel_values is not None:
                     if isinstance(pixel_values, torch.Tensor):
                         pixel_values = pixel_values.contiguous()
+                    if image_grid_thw is None and isinstance(pixel_values, torch.Tensor):
+                        patch_size = self._get_patch_size(model) or self.vision_budget.patch_size
+                        patch_size = max(1, int(patch_size))
+                        if pixel_values.dim() == 4:
+                            batch, _, height, width = pixel_values.shape
+                            frames = 1
+                        elif pixel_values.dim() == 5:
+                            batch, frames, _, height, width = pixel_values.shape
+                        else:
+                            batch = pixel_values.shape[0]
+                            frames = 1
+                            height, width = pixel_values.shape[-2:]
+                        grid_h = math.ceil(height / patch_size)
+                        grid_w = math.ceil(width / patch_size)
+                        image_grid_thw = torch.tensor(
+                            [[frames, grid_h, grid_w]] * batch
+                        )
                     token_counts = self._infer_token_counts(
                         outputs=outputs,
                         pixel_values=pixel_values,
