@@ -124,7 +124,8 @@ def evaluate_policy(model: VoVNet, loader: DataLoader) -> Dict[str, float]:
                 images=batch.get("images"),
                 labels=batch.get("labels"),
             )
-            preds = decode_answers(outputs["logits"], batch["labels"], tokenizer)
+            labels = outputs.get("labels") if outputs.get("labels") is not None else batch["labels"]
+            preds = decode_answers(outputs["logits"], labels, tokenizer)
             acc = exact_match_score(preds, batch.get("answers", []))
             total_acc += acc * batch["input_ids"].size(0)
             total_cost += outputs["expected_cost"].sum().item()
@@ -169,7 +170,8 @@ def evaluate_policy_with_cost_weight(
                 actions=actions,
                 labels=batch.get("labels"),
             )
-            preds = decode_answers(outputs["logits"], batch["labels"], tokenizer)
+            labels = outputs.get("labels") if outputs.get("labels") is not None else batch["labels"]
+            preds = decode_answers(outputs["logits"], labels, tokenizer)
             acc = exact_match_score(preds, batch.get("answers", []))
             total_acc += acc * batch["input_ids"].size(0)
             total_cost += outputs["expected_cost"].sum().item()

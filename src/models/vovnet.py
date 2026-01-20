@@ -550,8 +550,12 @@ class VoVNet(nn.Module):
         full_inputs = self._prepare_vision_inputs(
             images=images, mode="full", model=full_model
         )
-        token_count_coarse = coarse_inputs.token_counts.to(device).float()
-        token_count_full = full_inputs.token_counts.to(device).float()
+        token_count_coarse = self._vision_token_counts(coarse_inputs, model=self.base_vlm).to(
+            device
+        ).float()
+        token_count_full = self._vision_token_counts(full_inputs, model=full_model).to(
+            device
+        ).float()
         return token_count_coarse, token_count_full, coarse_inputs, full_inputs
 
     def _compute_expected_cost(
@@ -597,7 +601,7 @@ class VoVNet(nn.Module):
         full_labels: Optional[List[List[int]]] = None
 
         if image_token_id is not None and coarse_inputs is not None:
-            counts = self._vision_token_counts(coarse_inputs).tolist()
+            counts = self._vision_token_counts(coarse_inputs, model=self.base_vlm).tolist()
             coarse_tokens = []
             coarse_labels = [] if labels is not None else None
             for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
@@ -610,7 +614,8 @@ class VoVNet(nn.Module):
                     coarse_labels.append(new_lbls or [])
 
         if image_token_id is not None and full_inputs is not None:
-            counts = self._vision_token_counts(full_inputs).tolist()
+            model = self.full_vlm if self.full_vlm is not None else self.base_vlm
+            counts = self._vision_token_counts(full_inputs, model=model).tolist()
             full_tokens = []
             full_labels = [] if labels is not None else None
             for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
@@ -660,15 +665,79 @@ class VoVNet(nn.Module):
 
         return text_input_ids, text_attention_mask, text_labels_tensor
 
-    def _vision_token_counts(self, vision_inputs: VisionInputs) -> Tensor:
-        if vision_inputs.image_grid_thw is not None:
+    def _vision_token_counts(
+        self, vision_inputs: VisionInputs, model: Optional[BaseVLM] = None
+    ) -> Tensor:
+        counts = vision_inputs.token_counts.to(dtype=torch.long)
+        if counts.numel() == 0 and vision_inputs.image_grid_thw is not None:
             grid = vision_inputs.image_grid_thw.to(dtype=torch.long)
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
+            grid = self._apply_merge_to_grid(grid, model=model)
             counts = grid.prod(dim=-1)
-        else:
-            counts = vision_inputs.token_counts.to(dtype=torch.long)
         return counts.clamp(min=1)
+
+    def _apply_merge_to_grid(
+        self, grid: Tensor, model: Optional[BaseVLM] = None
+    ) -> Tensor:
+        target_model = model or self.base_vlm
+        if target_model is None:
+            return grid
+        config = getattr(target_model.model, "config", None)
+        vision_config = getattr(config, "vision_config", None)
+        spatial_merge = None
+        temporal_merge = None
+        for cfg in (vision_config, config):
+            if cfg is None:
+                continue
+            spatial_merge = (
+                getattr(cfg, "spatial_merge_size", None)
+                or getattr(cfg, "spatial_merge_factor", None)
+                or getattr(cfg, "spatial_merge_ratio", None)
+                or getattr(cfg, "spatial_merge", None)
+                or getattr(cfg, "merge_size", None)
+                or getattr(cfg, "image_merge_size", None)
+                or getattr(cfg, "image_merge_ratio", None)
+            )
+            temporal_merge = (
+                getattr(cfg, "temporal_merge_size", None)
+                or getattr(cfg, "temporal_merge_factor", None)
+                or getattr(cfg, "temporal_merge_ratio", None)
+                or getattr(cfg, "temporal_merge", None)
+            )
+            if spatial_merge or temporal_merge:
+                break
+        if spatial_merge is None and temporal_merge is None:
+            visual = getattr(target_model.model, "visual", None)
+            if visual is not None:
+                spatial_merge = (
+                    getattr(visual, "spatial_merge_size", None)
+                    or getattr(visual, "spatial_merge_factor", None)
+                    or getattr(visual, "spatial_merge_ratio", None)
+                    or getattr(visual, "spatial_merge", None)
+                    or getattr(visual, "merge_size", None)
+                )
+                temporal_merge = (
+                    getattr(visual, "temporal_merge_size", None)
+                    or getattr(visual, "temporal_merge_factor", None)
+                    or getattr(visual, "temporal_merge_ratio", None)
+                    or getattr(visual, "temporal_merge", None)
+                )
+        if isinstance(spatial_merge, (list, tuple)):
+            spatial_merge = spatial_merge[0] if spatial_merge else None
+        if isinstance(temporal_merge, (list, tuple)):
+            temporal_merge = temporal_merge[0] if temporal_merge else None
+        spatial_merge = int(spatial_merge) if spatial_merge else 1
+        temporal_merge = int(temporal_merge) if temporal_merge else 1
+        if spatial_merge <= 1 and temporal_merge <= 1:
+            return grid
+        merged = grid.clone()
+        if temporal_merge > 1:
+            merged[:, 0] = (merged[:, 0] + temporal_merge - 1) // temporal_merge
+        if spatial_merge > 1:
+            merged[:, 1] = (merged[:, 1] + spatial_merge - 1) // spatial_merge
+            merged[:, 2] = (merged[:, 2] + spatial_merge - 1) // spatial_merge
+        return merged
 
     def _prepare_vision_inputs(
         self,
@@ -875,6 +944,7 @@ class VoVNet(nn.Module):
             )
         if vision_inputs.input_ids is not None:
             input_ids = vision_inputs.input_ids
+            past_key_values = None
         if vision_inputs.attention_mask is not None:
             attention_mask = vision_inputs.attention_mask
         pixel_values = vision_inputs.pixel_values
@@ -992,6 +1062,30 @@ class VoVNet(nn.Module):
             if grid_tensor.ndim == 1:
                 grid_tensor = grid_tensor.unsqueeze(0)
             if grid_tensor.shape[-1] == 3:
+                apply_merge = True
+                if pixel_values is not None:
+                    patch_size = self._get_patch_size(model) or self.vision_budget.patch_size
+                    patch_size = max(1, int(patch_size))
+                    if pixel_values.dim() == 4:
+                        _, _, height, width = pixel_values.shape
+                        frames = 1
+                    elif pixel_values.dim() == 5:
+                        _, frames, _, height, width = pixel_values.shape
+                    else:
+                        frames = 1
+                        height, width = pixel_values.shape[-2:]
+                    raw_grid = torch.tensor(
+                        [[frames, math.ceil(height / patch_size), math.ceil(width / patch_size)]]
+                        * grid_tensor.shape[0]
+                    )
+                    if raw_grid.shape == grid_tensor.shape and torch.equal(
+                        raw_grid, grid_tensor
+                    ):
+                        apply_merge = True
+                    else:
+                        apply_merge = False
+                if apply_merge:
+                    grid_tensor = self._apply_merge_to_grid(grid_tensor, model=model)
                 return grid_tensor.long().prod(dim=-1)
         if pixel_values is not None:
             return self._estimate_tokens_from_pixel_values(pixel_values, model=model)
@@ -1010,14 +1104,18 @@ class VoVNet(nn.Module):
             batch, _, height, width = pixel_values.shape
             grid_h = math.ceil(height / patch_size)
             grid_w = math.ceil(width / patch_size)
-            tokens = int(grid_h * grid_w)
-            return torch.full((batch,), tokens, dtype=torch.long)
+            grid = torch.tensor([[1, grid_h, grid_w]] * batch)
+            grid = self._apply_merge_to_grid(grid, model=model)
+            tokens = grid.long().prod(dim=-1)
+            return tokens
         if pixel_values.dim() == 5:
             batch, frames, _, height, width = pixel_values.shape
             grid_h = math.ceil(height / patch_size)
             grid_w = math.ceil(width / patch_size)
-            tokens = int(frames * grid_h * grid_w)
-            return torch.full((batch,), tokens, dtype=torch.long)
+            grid = torch.tensor([[frames, grid_h, grid_w]] * batch)
+            grid = self._apply_merge_to_grid(grid, model=model)
+            tokens = grid.long().prod(dim=-1)
+            return tokens
         return torch.zeros(pixel_values.shape[0], dtype=torch.long)
 
     def _get_patch_size(self, model: BaseVLM) -> Optional[int]:

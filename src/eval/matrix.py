@@ -284,7 +284,8 @@ def _evaluate_reference_policy(
     with torch.no_grad():
         for batch in loader:
             outputs = _forward_with_cost(raw_model, batch, cost_weight)
-            preds = _decode_from_logits(outputs["logits"], batch["labels"], tokenizer)
+            labels = outputs.get("labels") if outputs.get("labels") is not None else batch["labels"]
+            preds = _decode_from_logits(outputs["logits"], labels, tokenizer)
             acc = metric_fn(preds, batch.get("answers", []))
             total_acc += acc * len(preds)
             total_cost += outputs["expected_cost"].sum().item()
@@ -377,7 +378,8 @@ def evaluate_dataset(
                     seq_len=batch["input_ids"].size(1),
                     actions=outputs["actions"],
                 )
-            preds = _decode_from_logits(outputs["logits"], batch["labels"], tokenizer)
+            labels = outputs.get("labels") if outputs.get("labels") is not None else batch["labels"]
+            preds = _decode_from_logits(outputs["logits"], labels, tokenizer)
             acc = metric_fn(preds, batch.get("answers", []))
             total_acc += acc * len(preds)
             total_cost += outputs["expected_cost"].sum().item()

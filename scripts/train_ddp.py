@@ -367,7 +367,7 @@ def _evaluate(
             action_counts += torch.bincount(
                 outputs["actions"].detach(), minlength=len(Action)
             )
-            labels = batch.get("labels")
+            labels = outputs.get("labels") if outputs.get("labels") is not None else batch.get("labels")
             if labels is not None and tokenizer is not None:
                 mask = labels.ne(-100)
                 if mask.any():
