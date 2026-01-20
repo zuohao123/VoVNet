@@ -668,14 +668,18 @@ class VoVNet(nn.Module):
     def _vision_token_counts(
         self, vision_inputs: VisionInputs, model: Optional[BaseVLM] = None
     ) -> Tensor:
-        counts = vision_inputs.token_counts.to(dtype=torch.long)
-        if counts.numel() == 0 and vision_inputs.image_grid_thw is not None:
+        if vision_inputs.image_grid_thw is not None:
             grid = vision_inputs.image_grid_thw.to(dtype=torch.long)
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
             grid = self._apply_merge_to_grid(grid, model=model)
             counts = grid.prod(dim=-1)
-        return counts.clamp(min=1)
+            return counts.clamp(min=1)
+        pixel_values = vision_inputs.pixel_values
+        if isinstance(pixel_values, torch.Tensor):
+            counts = self._estimate_tokens_from_pixel_values(pixel_values, model=model or self.base_vlm)
+            return counts.to(dtype=torch.long).clamp(min=1)
+        return vision_inputs.token_counts.to(dtype=torch.long).clamp(min=1)
 
     def _apply_merge_to_grid(
         self, grid: Tensor, model: Optional[BaseVLM] = None
@@ -1062,30 +1066,7 @@ class VoVNet(nn.Module):
             if grid_tensor.ndim == 1:
                 grid_tensor = grid_tensor.unsqueeze(0)
             if grid_tensor.shape[-1] == 3:
-                apply_merge = True
-                if pixel_values is not None:
-                    patch_size = self._get_patch_size(model) or self.vision_budget.patch_size
-                    patch_size = max(1, int(patch_size))
-                    if pixel_values.dim() == 4:
-                        _, _, height, width = pixel_values.shape
-                        frames = 1
-                    elif pixel_values.dim() == 5:
-                        _, frames, _, height, width = pixel_values.shape
-                    else:
-                        frames = 1
-                        height, width = pixel_values.shape[-2:]
-                    raw_grid = torch.tensor(
-                        [[frames, math.ceil(height / patch_size), math.ceil(width / patch_size)]]
-                        * grid_tensor.shape[0]
-                    )
-                    if raw_grid.shape == grid_tensor.shape and torch.equal(
-                        raw_grid, grid_tensor
-                    ):
-                        apply_merge = True
-                    else:
-                        apply_merge = False
-                if apply_merge:
-                    grid_tensor = self._apply_merge_to_grid(grid_tensor, model=model)
+                grid_tensor = self._apply_merge_to_grid(grid_tensor, model=model)
                 return grid_tensor.long().prod(dim=-1)
         if pixel_values is not None:
             return self._estimate_tokens_from_pixel_values(pixel_values, model=model)
