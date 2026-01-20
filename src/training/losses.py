@@ -11,7 +11,9 @@ from torch.nn import functional as F
 def compute_task_loss(logits: Tensor, labels: Tensor | None) -> Tensor:
     """Compute token-level cross entropy loss."""
     if labels is None:
-        return torch.tensor(0.0, device=logits.device)
+        return logits.sum() * 0.0
+    if not labels.ne(-100).any():
+        return logits.sum() * 0.0
     vocab_size = logits.shape[-1]
     loss = F.cross_entropy(
         logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100

@@ -722,10 +722,15 @@ def main() -> None:
                         )
                         loss = losses["total_loss"] / grad_accum
 
-                    if scaler is not None:
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                    if loss.requires_grad:
+                        if scaler is not None:
+                            scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
+                    elif rank == 0:
+                        logger.warning(
+                            "Skipping backward because loss has no grad_fn; check labels/LoRA."
+                        )
 
                 if sync_grad:
                     if scaler is not None:
