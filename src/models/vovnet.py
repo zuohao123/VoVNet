@@ -56,6 +56,9 @@ class VisionInputs:
     pixel_values: Optional[Tensor]
     token_counts: Tensor
     image_grid_thw: Optional[Tensor] = None
+    input_ids: Optional[Tensor] = None
+    attention_mask: Optional[Tensor] = None
+    labels: Optional[Tensor] = None
 
 
 class VoVNet(nn.Module):
@@ -106,6 +109,109 @@ class VoVNet(nn.Module):
         self.policy = nn.Linear(vow_hidden_dim, len(Action))
         self.gain_head = nn.Linear(vow_hidden_dim, 2)
 
+    def _get_image_token_id(self) -> Optional[int]:
+        tokenizer = self.base_vlm.tokenizer
+        if tokenizer is None:
+            return None
+        image_token_id = getattr(tokenizer, "image_token_id", None)
+        if image_token_id is not None:
+            return int(image_token_id)
+        image_token = getattr(tokenizer, "image_token", None)
+        if image_token:
+            token_id = tokenizer.convert_tokens_to_ids(image_token)
+            if token_id is not None:
+                return int(token_id)
+        for token in getattr(tokenizer, "additional_special_tokens", []) or []:
+            if "image" in token.lower():
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                if token_id is not None:
+                    return int(token_id)
+        return None
+
+    def _strip_image_tokens(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        labels: Optional[Tensor],
+        image_token_id: Optional[int],
+    ) -> Tuple[List[List[int]], Optional[List[List[int]]]]:
+        token_lists: List[List[int]] = []
+        label_lists: Optional[List[List[int]]] = [] if labels is not None else None
+        for i in range(input_ids.size(0)):
+            ids = input_ids[i][attention_mask[i].bool()].tolist()
+            lbls = (
+                labels[i][attention_mask[i].bool()].tolist() if labels is not None else None
+            )
+            new_ids: List[int] = []
+            new_lbls: Optional[List[int]] = [] if labels is not None else None
+            for idx, tok in enumerate(ids):
+                if image_token_id is not None and tok == image_token_id:
+                    continue
+                new_ids.append(tok)
+                if new_lbls is not None and lbls is not None:
+                    new_lbls.append(lbls[idx])
+            token_lists.append(new_ids)
+            if label_lists is not None:
+                label_lists.append(new_lbls or [])
+        return token_lists, label_lists
+
+    def _insert_image_tokens(
+        self,
+        tokens: List[int],
+        labels: Optional[List[int]],
+        image_token_id: int,
+        token_count: int,
+        bos_token_id: Optional[int],
+    ) -> Tuple[List[int], Optional[List[int]]]:
+        if token_count <= 0:
+            return tokens, labels
+        insert_pos = 0
+        if bos_token_id is not None and tokens and tokens[0] == bos_token_id:
+            insert_pos = 1
+        new_tokens = tokens[:insert_pos] + [image_token_id] * token_count + tokens[insert_pos:]
+        if labels is None:
+            return new_tokens, None
+        new_labels = labels[:insert_pos] + [-100] * token_count + labels[insert_pos:]
+        return new_tokens, new_labels
+
+    def _pad_sequences(
+        self,
+        sequences: List[List[int]],
+        pad_value: int,
+        max_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tuple[Tensor, Tensor]:
+        batch = len(sequences)
+        padded = torch.full((batch, max_len), pad_value, device=device, dtype=dtype)
+        attention = torch.zeros((batch, max_len), device=device, dtype=torch.long)
+        for i, seq in enumerate(sequences):
+            if not seq:
+                continue
+            length = min(len(seq), max_len)
+            padded[i, :length] = torch.tensor(seq[:length], device=device, dtype=dtype)
+            attention[i, :length] = 1
+        return padded, attention
+
+    def _pad_labels(
+        self,
+        sequences: Optional[List[List[int]]],
+        pad_value: int,
+        max_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        if sequences is None:
+            return None
+        batch = len(sequences)
+        padded = torch.full((batch, max_len), pad_value, device=device, dtype=dtype)
+        for i, seq in enumerate(sequences):
+            if not seq:
+                continue
+            length = min(len(seq), max_len)
+            padded[i, :length] = torch.tensor(seq[:length], device=device, dtype=dtype)
+        return padded
+
     def forward(
         self,
         input_ids: Tensor,
@@ -115,16 +221,36 @@ class VoVNet(nn.Module):
         compute_gain: bool = False,
     ) -> Dict[str, Any]:
         """Run text-first pass, choose action, and optionally call vision."""
-        text_outputs, action_logits, gain_pred = self.text_first(input_ids, attention_mask)
-        action_probs, actions = self._select_actions(action_logits)
+        if self.training and not self.use_straight_through and images is not None:
+            if self._get_image_token_id() is not None:
+                raise RuntimeError(
+                    "Soft mixture is not supported with image token expansion; "
+                    "enable use_straight_through."
+                )
 
         token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
             self._prepare_token_counts(
                 images=images,
-                device=action_probs.device,
-                batch_size=action_probs.shape[0],
+                device=attention_mask.device,
+                batch_size=attention_mask.shape[0],
             )
+            if images is not None
+            else (torch.zeros_like(attention_mask[:, 0]), torch.zeros_like(attention_mask[:, 0]), None, None)
         )
+
+        text_input_ids, text_attention_mask, text_labels = self._prepare_text_and_vision_inputs(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            coarse_inputs=coarse_inputs,
+            full_inputs=full_inputs,
+        )
+
+        text_outputs, action_logits, gain_pred = self.text_first(
+            text_input_ids, text_attention_mask
+        )
+        action_probs, actions = self._select_actions(action_logits)
+
         expected_cost = self._compute_expected_cost(
             action_probs, token_count_coarse, token_count_full
         )
@@ -144,21 +270,22 @@ class VoVNet(nn.Module):
             fallback_entropy_trigger = zeros
             fallback_margin_trigger = zeros
         gain_true = None
-        if compute_gain and labels is not None:
+        if compute_gain and text_labels is not None:
             gain_true = self._compute_gain_targets(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                input_ids=text_input_ids,
+                attention_mask=text_attention_mask,
                 images=images,
-                labels=labels,
+                labels=text_labels,
                 text_outputs=text_outputs,
                 coarse_inputs=coarse_inputs,
                 full_inputs=full_inputs,
             )
 
+        labels_for_loss = text_labels
         if self.training and not self.use_straight_through:
             logits, vision_tokens = self._forward_soft_mixture(
-                input_ids,
-                attention_mask,
+                text_input_ids,
+                text_attention_mask,
                 images,
                 text_outputs,
                 action_probs,
@@ -166,12 +293,13 @@ class VoVNet(nn.Module):
                 full_inputs=full_inputs,
             )
         else:
-            logits, vision_tokens = self._forward_hard_actions(
-                input_ids,
-                attention_mask,
+            logits, vision_tokens, labels_for_loss = self._forward_hard_actions(
+                text_input_ids,
+                text_attention_mask,
                 images,
                 text_outputs,
                 actions,
+                text_labels=text_labels,
                 coarse_inputs=coarse_inputs,
                 full_inputs=full_inputs,
             )
@@ -194,7 +322,7 @@ class VoVNet(nn.Module):
             "fallback_margin_trigger": fallback_margin_trigger,
             "margin": margin,
             "text_logits": text_outputs.logits if not self.training else None,
-            "labels": labels,
+            "labels": labels_for_loss if labels is not None else None,
         }
 
     def text_first(
@@ -225,20 +353,30 @@ class VoVNet(nn.Module):
         labels: Optional[Tensor] = None,
     ) -> Dict[str, Any]:
         """Forward pass with externally provided actions (baselines)."""
-        text_outputs, _, gain_pred = self.text_first(input_ids, attention_mask)
         token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
             self._prepare_token_counts(
                 images=images,
-                device=input_ids.device,
-                batch_size=input_ids.shape[0],
+                device=attention_mask.device,
+                batch_size=attention_mask.shape[0],
             )
+            if images is not None
+            else (torch.zeros_like(attention_mask[:, 0]), torch.zeros_like(attention_mask[:, 0]), None, None)
         )
-        logits, vision_tokens = self._forward_hard_actions(
-            input_ids,
-            attention_mask,
+        text_input_ids, text_attention_mask, text_labels = self._prepare_text_and_vision_inputs(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            coarse_inputs=coarse_inputs,
+            full_inputs=full_inputs,
+        )
+        text_outputs, _, gain_pred = self.text_first(text_input_ids, text_attention_mask)
+        logits, vision_tokens, labels_for_loss = self._forward_hard_actions(
+            text_input_ids,
+            text_attention_mask,
             images,
             text_outputs,
             actions,
+            text_labels=text_labels,
             coarse_inputs=coarse_inputs,
             full_inputs=full_inputs,
         )
@@ -266,7 +404,7 @@ class VoVNet(nn.Module):
             "fallback_margin_trigger": None,
             "margin": margin,
             "text_logits": text_outputs.logits if not self.training else None,
-            "labels": labels,
+            "labels": labels_for_loss if labels is not None else None,
         }
 
     def _select_actions(self, action_logits: Tensor) -> Tuple[Tensor, Tensor]:
@@ -364,8 +502,18 @@ class VoVNet(nn.Module):
                 past_key_values=text_outputs.past_key_values,
                 vision_inputs=full_inputs,
             )
-            loss_coarse = self._per_sample_loss(coarse_logits, labels)
-            loss_full = self._per_sample_loss(full_logits, labels)
+            coarse_labels = (
+                coarse_inputs.labels
+                if coarse_inputs is not None and coarse_inputs.labels is not None
+                else labels
+            )
+            full_labels = (
+                full_inputs.labels
+                if full_inputs is not None and full_inputs.labels is not None
+                else labels
+            )
+            loss_coarse = self._per_sample_loss(coarse_logits, coarse_labels)
+            loss_full = self._per_sample_loss(full_logits, full_labels)
 
         gain_coarse = loss_no - loss_coarse
         gain_full = loss_no - loss_full
@@ -419,6 +567,109 @@ class VoVNet(nn.Module):
         scale = action_probs.new_tensor(self.cost_scale)
         return expected_tokens * scale
 
+    def _prepare_text_and_vision_inputs(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        labels: Optional[Tensor],
+        coarse_inputs: Optional[VisionInputs],
+        full_inputs: Optional[VisionInputs],
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        image_token_id = self._get_image_token_id()
+        tokenizer = self.base_vlm.tokenizer
+        pad_id = 0
+        bos_id = None
+        if tokenizer is not None:
+            pad_id = tokenizer.pad_token_id or 0
+            bos_id = tokenizer.bos_token_id
+
+        text_tokens, text_labels = self._strip_image_tokens(
+            input_ids, attention_mask, labels, image_token_id
+        )
+        text_max = max((len(seq) for seq in text_tokens), default=0)
+        device = input_ids.device
+        dtype = input_ids.dtype
+        label_dtype = labels.dtype if labels is not None else torch.long
+
+        coarse_tokens: Optional[List[List[int]]] = None
+        coarse_labels: Optional[List[List[int]]] = None
+        full_tokens: Optional[List[List[int]]] = None
+        full_labels: Optional[List[List[int]]] = None
+
+        if image_token_id is not None and coarse_inputs is not None:
+            counts = self._vision_token_counts(coarse_inputs).tolist()
+            coarse_tokens = []
+            coarse_labels = [] if labels is not None else None
+            for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
+                lbls = text_labels[idx] if labels is not None and text_labels is not None else None
+                new_seq, new_lbls = self._insert_image_tokens(
+                    seq, lbls, image_token_id, count, bos_id
+                )
+                coarse_tokens.append(new_seq)
+                if coarse_labels is not None:
+                    coarse_labels.append(new_lbls or [])
+
+        if image_token_id is not None and full_inputs is not None:
+            counts = self._vision_token_counts(full_inputs).tolist()
+            full_tokens = []
+            full_labels = [] if labels is not None else None
+            for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
+                lbls = text_labels[idx] if labels is not None and text_labels is not None else None
+                new_seq, new_lbls = self._insert_image_tokens(
+                    seq, lbls, image_token_id, count, bos_id
+                )
+                full_tokens.append(new_seq)
+                if full_labels is not None:
+                    full_labels.append(new_lbls or [])
+
+        max_len = text_max
+        if coarse_tokens is not None:
+            max_len = max(max_len, max((len(seq) for seq in coarse_tokens), default=0))
+        if full_tokens is not None:
+            max_len = max(max_len, max((len(seq) for seq in full_tokens), default=0))
+        max_len = max(1, max_len)
+
+        text_input_ids, text_attention_mask = self._pad_sequences(
+            text_tokens, pad_id, max_len, device, dtype
+        )
+        text_labels_tensor = self._pad_labels(
+            text_labels, -100, max_len, device, label_dtype
+        )
+
+        if coarse_inputs is not None and coarse_tokens is not None:
+            coarse_ids, coarse_mask = self._pad_sequences(
+                coarse_tokens, pad_id, max_len, device, dtype
+            )
+            coarse_lbls = self._pad_labels(
+                coarse_labels, -100, max_len, device, label_dtype
+            )
+            coarse_inputs.input_ids = coarse_ids
+            coarse_inputs.attention_mask = coarse_mask
+            coarse_inputs.labels = coarse_lbls
+
+        if full_inputs is not None and full_tokens is not None:
+            full_ids, full_mask = self._pad_sequences(
+                full_tokens, pad_id, max_len, device, dtype
+            )
+            full_lbls = self._pad_labels(
+                full_labels, -100, max_len, device, label_dtype
+            )
+            full_inputs.input_ids = full_ids
+            full_inputs.attention_mask = full_mask
+            full_inputs.labels = full_lbls
+
+        return text_input_ids, text_attention_mask, text_labels_tensor
+
+    def _vision_token_counts(self, vision_inputs: VisionInputs) -> Tensor:
+        if vision_inputs.image_grid_thw is not None:
+            grid = vision_inputs.image_grid_thw.to(dtype=torch.long)
+            if grid.ndim == 1:
+                grid = grid.unsqueeze(0)
+            counts = grid.prod(dim=-1)
+        else:
+            counts = vision_inputs.token_counts.to(dtype=torch.long)
+        return counts.clamp(min=1)
+
     def _prepare_vision_inputs(
         self,
         images: List[Image.Image],
@@ -442,11 +693,16 @@ class VoVNet(nn.Module):
         images: Optional[List[Image.Image]],
         text_outputs: VLMOutputs,
         actions: Tensor,
+        text_labels: Optional[Tensor] = None,
         coarse_inputs: Optional[VisionInputs] = None,
         full_inputs: Optional[VisionInputs] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
         if images is None:
-            return text_outputs.logits, torch.zeros_like(actions, dtype=torch.float)
+            return (
+                text_outputs.logits,
+                torch.zeros_like(actions, dtype=torch.float),
+                text_labels,
+            )
 
         if coarse_inputs is None or full_inputs is None:
             _, _, coarse_inputs, full_inputs = self._prepare_token_counts(
@@ -458,7 +714,7 @@ class VoVNet(nn.Module):
         unique_actions = actions.unique().tolist()
         if len(unique_actions) == 1 and unique_actions[0] != Action.NO_VISION:
             mode = "coarse" if unique_actions[0] == Action.COARSE_VISION else "full"
-            return self._forward_mode(
+            logits, tokens = self._forward_mode(
                 input_ids,
                 attention_mask,
                 images,
@@ -467,19 +723,33 @@ class VoVNet(nn.Module):
                 past_key_values=text_outputs.past_key_values,
                 vision_inputs=coarse_inputs if mode == "coarse" else full_inputs,
             )
+            labels = None
+            if text_labels is not None:
+                if mode == "coarse" and coarse_inputs is not None:
+                    labels = coarse_inputs.labels
+                elif mode == "full" and full_inputs is not None:
+                    labels = full_inputs.labels
+            return logits, tokens, labels
 
         logits_list: List[Tensor] = []
         token_counts: List[int] = []
+        label_list: Optional[List[Tensor]] = [] if text_labels is not None else None
         coarse_pixel_values = (
             coarse_inputs.pixel_values if coarse_inputs is not None else None
         )
         full_pixel_values = full_inputs.pixel_values if full_inputs is not None else None
         coarse_tokens = coarse_inputs.token_counts if coarse_inputs is not None else None
         full_tokens = full_inputs.token_counts if full_inputs is not None else None
+        coarse_ids = coarse_inputs.input_ids if coarse_inputs is not None else None
+        coarse_mask = coarse_inputs.attention_mask if coarse_inputs is not None else None
+        full_ids = full_inputs.input_ids if full_inputs is not None else None
+        full_mask = full_inputs.attention_mask if full_inputs is not None else None
         for idx, action in enumerate(actions.tolist()):
             if action == Action.NO_VISION:
                 logits_list.append(text_outputs.logits[idx : idx + 1])
                 token_counts.append(0)
+                if label_list is not None and text_labels is not None:
+                    label_list.append(text_labels[idx : idx + 1])
                 continue
 
             if action == Action.COARSE_VISION:
@@ -487,6 +757,14 @@ class VoVNet(nn.Module):
                     coarse_pixel_values[idx : idx + 1]
                     if coarse_pixel_values is not None
                     else None
+                )
+                input_ids_row = (
+                    coarse_ids[idx : idx + 1] if coarse_ids is not None else input_ids[idx : idx + 1]
+                )
+                attention_mask_row = (
+                    coarse_mask[idx : idx + 1]
+                    if coarse_mask is not None
+                    else attention_mask[idx : idx + 1]
                 )
                 count = (
                     int(coarse_tokens[idx]) if coarse_tokens is not None else 0
@@ -498,23 +776,46 @@ class VoVNet(nn.Module):
                     if full_pixel_values is not None
                     else None
                 )
+                input_ids_row = (
+                    full_ids[idx : idx + 1] if full_ids is not None else input_ids[idx : idx + 1]
+                )
+                attention_mask_row = (
+                    full_mask[idx : idx + 1]
+                    if full_mask is not None
+                    else attention_mask[idx : idx + 1]
+                )
                 count = int(full_tokens[idx]) if full_tokens is not None else 0
                 model = (
                     self.full_vlm if self.full_vlm is not None else self.base_vlm
                 )
 
             outputs = model.forward_with_vision(
-                input_ids=input_ids[idx : idx + 1],
-                attention_mask=attention_mask[idx : idx + 1],
+                input_ids=input_ids_row,
+                attention_mask=attention_mask_row,
                 pixel_values=pixel_values,
+                image_grid_thw=(
+                    coarse_inputs.image_grid_thw[idx : idx + 1]
+                    if action == Action.COARSE_VISION and coarse_inputs is not None
+                    else (
+                        full_inputs.image_grid_thw[idx : idx + 1]
+                        if action == Action.FULL_VISION and full_inputs is not None
+                        else None
+                    )
+                ),
                 past_key_values=None,
             )
             logits_list.append(outputs.logits)
             token_counts.append(count)
+            if label_list is not None:
+                if action == Action.COARSE_VISION and coarse_inputs is not None:
+                    label_list.append(coarse_inputs.labels[idx : idx + 1])
+                elif action == Action.FULL_VISION and full_inputs is not None:
+                    label_list.append(full_inputs.labels[idx : idx + 1])
 
         logits = torch.cat(logits_list, dim=0)
         vision_tokens = torch.tensor(token_counts, device=logits.device, dtype=torch.float)
-        return logits, vision_tokens
+        labels = torch.cat(label_list, dim=0) if label_list is not None else None
+        return logits, vision_tokens, labels
 
     def _forward_soft_mixture(
         self,
@@ -572,6 +873,10 @@ class VoVNet(nn.Module):
             vision_inputs = self._prepare_vision_inputs(
                 images=images, mode=mode, model=model
             )
+        if vision_inputs.input_ids is not None:
+            input_ids = vision_inputs.input_ids
+        if vision_inputs.attention_mask is not None:
+            attention_mask = vision_inputs.attention_mask
         pixel_values = vision_inputs.pixel_values
         if isinstance(pixel_values, torch.Tensor):
             pixel_values = pixel_values.to(input_ids.device, non_blocking=True)
