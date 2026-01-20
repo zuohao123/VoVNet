@@ -177,6 +177,9 @@ class BaseVLM(nn.Module):
         fallback = {name.split(".")[-1] for name in linear_names if name.split(".")[-1] in common}
         if fallback:
             return sorted(fallback)
+        all_suffixes = {name.split(".")[-1] for name in linear_names}
+        if all_suffixes:
+            return sorted(all_suffixes)
         return target_modules
 
     def freeze_vision_encoder(self) -> None:
