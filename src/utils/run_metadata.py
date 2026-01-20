@@ -128,6 +128,8 @@ def collect_hparams(cfg: Config) -> Dict[str, Any]:
         "baseline_target_ratios": cfg.policy.baseline_target_ratios,
         "baseline_bucket_ratios": cfg.policy.baseline_bucket_ratios,
         "baseline_bucket_thresholds": cfg.policy.baseline_bucket_thresholds,
+        "baseline_pruning_ratio": cfg.policy.baseline_pruning_ratio,
+        "baseline_pruning_mode": cfg.policy.baseline_pruning_mode,
         "policy_mode": cfg.policy.policy_mode,
         "gain_supervision": cfg.policy.gain_supervision,
         "gain_loss_type": cfg.policy.gain_loss_type,

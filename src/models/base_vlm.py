@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -40,6 +41,16 @@ class VLMOutputs:
     logits: torch.Tensor
     hidden_states: Optional[Tuple[torch.Tensor, ...]]
     past_key_values: Optional[Any]
+
+
+@dataclass
+class VisionPruningSpec:
+    """Specification for pruning visual tokens at inference time."""
+
+    ratio: float
+    mode: str = "stride"
+    min_tokens: int = 1
+    keep_counts: Optional[torch.Tensor] = None
 
 
 class BaseVLM(nn.Module):
@@ -208,6 +219,139 @@ class BaseVLM(nn.Module):
             return sorted(all_suffixes)
         return target_modules
 
+    @staticmethod
+    def compute_pruned_counts(
+        token_counts: torch.Tensor, ratio: float, min_tokens: int = 1
+    ) -> torch.Tensor:
+        """Compute pruned token counts with consistent rounding."""
+        if ratio <= 0:
+            raise ValueError("pruning_ratio must be > 0")
+        counts = token_counts.to(dtype=torch.float32)
+        original = counts.round().to(dtype=torch.long).clamp(min=1)
+        keep = (original.float() * float(ratio)).round().to(dtype=torch.long)
+        keep = torch.clamp(keep, min=min_tokens)
+        keep = torch.minimum(keep, original)
+        return keep
+
+    def _prune_embeddings(
+        self, embeds: torch.Tensor, spec: VisionPruningSpec
+    ) -> Tuple[torch.Tensor, list[torch.Tensor]]:
+        if embeds.dim() == 2:
+            embeds = embeds.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+        batch, tokens, _ = embeds.shape
+        keep_counts = spec.keep_counts
+        if keep_counts is None:
+            keep = max(spec.min_tokens, int(round(tokens * float(spec.ratio))))
+            keep_counts = torch.full(
+                (batch,), keep, device=embeds.device, dtype=torch.long
+            )
+        else:
+            keep_counts = keep_counts.to(device=embeds.device, dtype=torch.long)
+            if keep_counts.numel() == 1 and batch > 1:
+                keep_counts = keep_counts.expand(batch)
+        keep_counts = torch.clamp(keep_counts, min=spec.min_tokens, max=tokens)
+
+        indices: list[torch.Tensor] = []
+        for i in range(batch):
+            k = int(keep_counts[i].item())
+            if k >= tokens:
+                idx = torch.arange(tokens, device=embeds.device)
+            elif spec.mode == "topk_norm":
+                scores = embeds[i].float().norm(dim=-1)
+                idx = torch.topk(scores, k=k, largest=True).indices
+                idx = torch.sort(idx).values
+            else:
+                if k <= 1:
+                    idx = torch.tensor([0], device=embeds.device, dtype=torch.long)
+                else:
+                    idx = torch.linspace(
+                        0, tokens - 1, steps=k, device=embeds.device
+                    ).round().to(dtype=torch.long)
+            indices.append(idx)
+
+        pruned = torch.stack(
+            [embeds[i, idx] for i, idx in enumerate(indices)], dim=0
+        )
+        if squeeze:
+            pruned = pruned.squeeze(0)
+        return pruned, indices
+
+    def _prune_by_indices(
+        self, embeds: torch.Tensor, indices: list[torch.Tensor]
+    ) -> torch.Tensor:
+        if embeds.dim() == 2:
+            embeds = embeds.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+        pruned = torch.stack(
+            [embeds[i, idx] for i, idx in enumerate(indices)], dim=0
+        )
+        if squeeze:
+            pruned = pruned.squeeze(0)
+        return pruned
+
+    def _apply_pruning(
+        self, outputs: Any, spec: VisionPruningSpec
+    ) -> Any:
+        if isinstance(outputs, tuple) and len(outputs) >= 2:
+            image_embeds, deepstack = outputs[:2]
+            if isinstance(image_embeds, torch.Tensor):
+                pruned_embeds, indices = self._prune_embeddings(image_embeds, spec)
+            else:
+                return outputs
+            pruned_deepstack = deepstack
+            if isinstance(deepstack, torch.Tensor):
+                pruned_deepstack = self._prune_by_indices(deepstack, indices)
+            elif isinstance(deepstack, (list, tuple)):
+                pruned_list = []
+                for item in deepstack:
+                    if isinstance(item, torch.Tensor):
+                        pruned_list.append(self._prune_by_indices(item, indices))
+                    else:
+                        pruned_list.append(item)
+                pruned_deepstack = type(deepstack)(pruned_list)
+            return (pruned_embeds, pruned_deepstack, *outputs[2:])
+        return outputs
+
+    @contextmanager
+    def _vision_pruning(self, spec: Optional[VisionPruningSpec]):
+        if spec is None or spec.ratio >= 1.0:
+            yield
+            return
+        target = self.model
+        get_features = getattr(target, "get_image_features", None)
+        if get_features is not None:
+            original = get_features
+
+            def patched(*args: Any, **kwargs: Any):
+                return self._apply_pruning(original(*args, **kwargs), spec)
+
+            setattr(target, "get_image_features", patched)
+            try:
+                yield
+            finally:
+                setattr(target, "get_image_features", original)
+            return
+
+        visual = getattr(target, "visual", None)
+        if visual is None or not hasattr(visual, "forward"):
+            yield
+            return
+        original_forward = visual.forward
+
+        def patched_forward(*args: Any, **kwargs: Any):
+            return self._apply_pruning(original_forward(*args, **kwargs), spec)
+
+        visual.forward = patched_forward
+        try:
+            yield
+        finally:
+            visual.forward = original_forward
+
     def freeze_vision_encoder(self) -> None:
         """Freeze vision-related parameters by name heuristic."""
         for name, param in self.model.named_parameters():
@@ -243,6 +387,7 @@ class BaseVLM(nn.Module):
         image_grid_thw: Optional[torch.Tensor] = None,
         past_key_values: Optional[Any] = None,
         use_cache: bool = True,
+        vision_pruning: Optional[VisionPruningSpec] = None,
     ) -> Any:
         """Forward pass that may include vision inputs."""
         if getattr(self.model, "gradient_checkpointing", False):
@@ -259,7 +404,8 @@ class BaseVLM(nn.Module):
             kwargs["image_grid_thw"] = image_grid_thw
         if past_key_values is not None:
             kwargs["past_key_values"] = past_key_values
-        return self._safe_forward(**kwargs)
+        with self._vision_pruning(vision_pruning):
+            return self._safe_forward(**kwargs)
 
     def generate(self, **kwargs: Any) -> Any:
         """Generate tokens if the model supports it."""

@@ -20,9 +20,9 @@ from src.baselines.uncertainty_threshold import select_actions_binary
 from src.config.config import Config
 from src.data.collate import VLMDataCollator
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, get_metric_fn
-from src.models.base_vlm import BaseVLM
+from src.models.base_vlm import BaseVLM, VisionPruningSpec
 from src.models.uncertainty import expected_calibration_error
-from src.models.vovnet import Action, VoVNet
+from src.models.vovnet import Action, VoVNet, VisionInputs
 from src.models.vision_budget import VisionBudgetController
 from src.utils.profiling import BatchProfiler
 
@@ -194,6 +194,92 @@ def _forward_with_uncertainty_threshold(
     }
 
 
+def _forward_with_vision_token_pruning_proxy(
+    model: VoVNet,
+    batch: Dict[str, Any],
+    pruning_ratio: float,
+    pruning_mode: str,
+) -> Dict[str, Any]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    if images is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "PRUNING_PROXY_TEXT_ONLY"
+        return outputs
+
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+    )
+    token_count_coarse, token_count_full, _, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    if full_inputs is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "PRUNING_PROXY_TEXT_ONLY"
+        return outputs
+
+    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+    keep_counts = full_model.compute_pruned_counts(token_count_full, pruning_ratio)
+    keep_counts = keep_counts.to(device=batch["input_ids"].device, dtype=torch.long)
+
+    pruned_inputs = VisionInputs(
+        pixel_values=None,
+        token_counts=keep_counts,
+        image_grid_thw=None,
+    )
+    raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=None,
+        full_inputs=pruned_inputs,
+    )
+    full_inputs.input_ids = pruned_inputs.input_ids
+    full_inputs.attention_mask = pruned_inputs.attention_mask
+    full_inputs.labels = pruned_inputs.labels
+    full_inputs.token_counts = keep_counts
+
+    pruning_spec = VisionPruningSpec(
+        ratio=float(pruning_ratio),
+        mode=pruning_mode,
+        min_tokens=1,
+        keep_counts=keep_counts,
+    )
+    logits, _ = raw_model._forward_mode(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        images=images,
+        text_outputs=text_outputs,
+        mode="full",
+        vision_inputs=full_inputs,
+        vision_pruning=pruning_spec,
+    )
+    actions = torch.full(
+        (batch["input_ids"].size(0),),
+        Action.FULL_VISION,
+        device=batch["input_ids"].device,
+        dtype=torch.long,
+    )
+    action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, token_count_coarse, keep_counts.float()
+    )
+    action_label = "PRUNING_PROXY_FULL"
+    return {
+        "logits": logits,
+        "actions": actions,
+        "expected_cost": expected_cost,
+        "vision_tokens": keep_counts.float(),
+        "remaining_vision_tokens": keep_counts.float(),
+        "action_label": action_label,
+        "labels": full_inputs.labels,
+    }
+
+
 def _forward_with_random_policy_matched(
     model: VoVNet,
     batch: Dict[str, Any],
@@ -310,12 +396,15 @@ def evaluate_dataset(
     baseline_target_ratios: Optional[List[float]],
     baseline_bucket_ratios: Optional[List[List[float]]],
     baseline_bucket_thresholds: Optional[List[float]],
+    baseline_pruning_ratio: float,
+    baseline_pruning_mode: str,
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
     raw_model.eval()
     total_acc = 0.0
     total_cost = 0.0
     total_vision_tokens = 0.0
+    total_remaining_tokens = 0.0
     total_count = 0
     total_ece = 0.0
     total_ece_count = 0
@@ -325,6 +414,9 @@ def evaluate_dataset(
     baseline_name = normalize_baseline_name(baseline_name)
     baseline_uncertainty = (baseline_uncertainty or "entropy").strip().lower()
     baseline_vision = (baseline_vision or "full").strip().lower()
+    baseline_pruning_mode = (baseline_pruning_mode or "stride").strip().lower()
+    if baseline_pruning_mode == "topk":
+        baseline_pruning_mode = "topk_norm"
     action_label: Optional[str] = None
     bucket_thresholds: Optional[tuple[float, float]] = None
     generator: Optional[torch.Generator] = None
@@ -355,6 +447,14 @@ def evaluate_dataset(
                     threshold=baseline_threshold,
                     uncertainty_metric=baseline_uncertainty,
                     vision_mode=baseline_vision,
+                )
+                action_label = outputs.get("action_label")
+            elif baseline_name == "vision_token_pruning_proxy":
+                outputs = _forward_with_vision_token_pruning_proxy(
+                    raw_model,
+                    batch,
+                    pruning_ratio=baseline_pruning_ratio,
+                    pruning_mode=baseline_pruning_mode,
                 )
                 action_label = outputs.get("action_label")
             elif baseline_name == "random_policy_matched":
@@ -390,6 +490,9 @@ def evaluate_dataset(
             vision_tokens = outputs.get("vision_tokens")
             if vision_tokens is not None:
                 total_vision_tokens += vision_tokens.sum().item()
+            remaining_tokens = outputs.get("remaining_vision_tokens")
+            if remaining_tokens is not None:
+                total_remaining_tokens += remaining_tokens.sum().item()
             labels = batch.get("labels")
             if labels is not None:
                 mask = labels.ne(-100)
@@ -407,6 +510,7 @@ def evaluate_dataset(
     mem_peak = summary.get("overall", {}).get("mem_mb", {})
     avg_cost = total_cost / max(1, total_count)
     avg_vision_tokens = total_vision_tokens / max(1, total_count)
+    avg_remaining_tokens = total_remaining_tokens / max(1, total_count)
     results = {
         "accuracy": total_acc / max(1, total_count),
         "action_rates": action_rates,
@@ -416,6 +520,7 @@ def evaluate_dataset(
         "avg_cost": avg_cost,
         "avg_token_cost": avg_cost,
         "avg_vision_token_count": avg_vision_tokens,
+        "remaining_vision_tokens": avg_remaining_tokens,
         "latency_stats": latency_stats,
         "latency": latency_stats,
         "mem_peak": mem_peak,
@@ -426,7 +531,20 @@ def evaluate_dataset(
         results["threshold"] = baseline_threshold
         results["uncertainty_metric"] = baseline_uncertainty
         results["vision_mode"] = baseline_vision
+    if baseline_name == "vision_token_pruning_proxy":
+        results["pruning_ratio"] = baseline_pruning_ratio
+        results["pruning_mode"] = baseline_pruning_mode
     if baseline_name == "random_policy_matched":
+        reference = _evaluate_reference_policy(
+            raw_model, loader, metric_fn, cost_weight
+        )
+        results["vovnet_accuracy"] = reference.get("accuracy", 0.0)
+        results["vovnet_avg_cost"] = reference.get("avg_cost", 0.0)
+        results["accuracy_gap_vs_vovnet"] = (
+            results["accuracy"] - results["vovnet_accuracy"]
+        )
+        results["cost_gap_vs_vovnet"] = results["avg_cost"] - results["vovnet_avg_cost"]
+    if baseline_name == "vision_token_pruning_proxy":
         reference = _evaluate_reference_policy(
             raw_model, loader, metric_fn, cost_weight
         )
@@ -449,6 +567,7 @@ def rows_from_results(
         mem_peak = item.get("mem_peak", {})
         avg_cost = item.get("avg_cost", item.get("avg_token_cost"))
         avg_vision_tokens = item.get("avg_vision_token_count", 0.0)
+        remaining_tokens = item.get("remaining_vision_tokens")
         rows.append(
             {
                 "dataset": dataset,
@@ -457,6 +576,8 @@ def rows_from_results(
                 "baseline_name": item.get("baseline_name"),
                 "action": item.get("action", "policy"),
                 "threshold": item.get("threshold"),
+                "pruning_ratio": item.get("pruning_ratio"),
+                "remaining_vision_tokens": remaining_tokens,
                 "uncertainty_metric": item.get("uncertainty_metric"),
                 "vision_mode": item.get("vision_mode"),
                 "accuracy": item.get("accuracy"),

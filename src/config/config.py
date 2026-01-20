@@ -40,6 +40,9 @@ class PolicyConfig:
     baseline_target_ratios: List[float] | None = None
     baseline_bucket_ratios: List[List[float]] | None = None
     baseline_bucket_thresholds: List[float] | None = None
+    baseline_pruning_ratio: float = 1.0
+    baseline_pruning_mode: str = "stride"
+    finetune_pruning: bool = False
     gumbel_tau: float = 1.0
     use_straight_through: bool = True
     eval_sample: bool = False
@@ -196,12 +199,15 @@ class Config:
                 "threshold",
                 "random_policy_matched",
                 "random_matched",
+                "vision_token_pruning_proxy",
+                "pruning_proxy",
+                "vision_pruning",
                 "none",
                 "null",
             }:
                 raise ValueError(
                     "baseline_name must be always_full, always_coarse, no_vision, "
-                    "uncertainty_threshold, random_policy_matched, or null"
+                    "uncertainty_threshold, random_policy_matched, vision_token_pruning_proxy, or null"
                 )
         uncertainty = self.policy.baseline_uncertainty.strip().lower()
         if uncertainty not in {"entropy", "margin"}:
@@ -232,6 +238,13 @@ class Config:
                         raise ValueError("baseline_bucket_thresholds must have 2 values")
                     if thresholds[0] >= thresholds[1]:
                         raise ValueError("baseline_bucket_thresholds must be increasing")
+            if normalized in {"vision_token_pruning_proxy", "pruning_proxy", "vision_pruning"}:
+                ratio = float(self.policy.baseline_pruning_ratio)
+                if ratio <= 0.0 or ratio > 1.0:
+                    raise ValueError("baseline_pruning_ratio must be in (0, 1]")
+                mode = self.policy.baseline_pruning_mode.strip().lower()
+                if mode not in {"stride", "topk_norm", "topk"}:
+                    raise ValueError("baseline_pruning_mode must be stride or topk_norm")
         if self.policy.gain_loss_type not in (
             "mse",
             "huber",
@@ -363,6 +376,11 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.baseline_bucket_thresholds = _to_float_list(
         cfg.policy.baseline_bucket_thresholds, "policy.baseline_bucket_thresholds"
     )
+    cfg.policy.baseline_pruning_ratio = _to_float(
+        cfg.policy.baseline_pruning_ratio, "policy.baseline_pruning_ratio"
+    )
+    if isinstance(cfg.policy.baseline_pruning_mode, str):
+        cfg.policy.baseline_pruning_mode = cfg.policy.baseline_pruning_mode.strip().lower()
 
     cfg.vision_budget.coarse_long_side = _to_int(
         cfg.vision_budget.coarse_long_side, "vision_budget.coarse_long_side"

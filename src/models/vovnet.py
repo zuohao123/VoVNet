@@ -13,7 +13,7 @@ from PIL import Image
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from src.models.base_vlm import BaseVLM, VLMOutputs
+from src.models.base_vlm import BaseVLM, VLMOutputs, VisionPruningSpec
 from src.models.uncertainty import entropy_from_logits, margin_from_logits
 from src.models.vision_budget import VisionBudgetController
 
@@ -940,6 +940,7 @@ class VoVNet(nn.Module):
         mode: str,
         past_key_values: Optional[Any] = None,
         vision_inputs: Optional[VisionInputs] = None,
+        vision_pruning: Optional[VisionPruningSpec] = None,
     ) -> Tuple[Tensor, Tensor]:
         model = self.full_vlm if (mode == "full" and self.full_vlm) else self.base_vlm
         if vision_inputs is None:
@@ -969,6 +970,7 @@ class VoVNet(nn.Module):
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             past_key_values=past_key_values,
+            vision_pruning=vision_pruning,
         )
         tokens = vision_inputs.token_counts.to(outputs.logits.device).float()
         return outputs.logits, tokens

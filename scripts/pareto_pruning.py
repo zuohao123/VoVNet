@@ -1,4 +1,4 @@
-"""Sweep uncertainty thresholds and write pareto_threshold.csv."""
+"""Sweep pruning ratios and write pareto_pruning.csv."""
 from __future__ import annotations
 
 import argparse
@@ -18,15 +18,14 @@ logger = setup_logging(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Pareto sweep for uncertainty-threshold baseline"
+        description="Pareto sweep for vision token pruning baseline"
     )
     parser.add_argument("--config", action="append", required=True)
     parser.add_argument("--dataset_config", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="outputs")
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--thresholds", type=float, nargs="+", required=True)
-    parser.add_argument("--uncertainty", type=str, default=None)
-    parser.add_argument("--vision", type=str, default=None)
+    parser.add_argument("--ratios", type=float, nargs="+", required=True)
+    parser.add_argument("--mode", type=str, default=None)
     return parser.parse_args()
 
 
@@ -42,14 +41,12 @@ def main() -> None:
     cfg = load_config(args.config)
     set_seed(cfg.training.seed)
 
-    cfg.policy.baseline_name = "uncertainty_threshold"
-    if args.uncertainty:
-        cfg.policy.baseline_uncertainty = args.uncertainty.strip().lower()
-    if args.vision:
-        cfg.policy.baseline_vision = args.vision.strip().lower()
+    cfg.policy.baseline_name = "vision_token_pruning_proxy"
+    if args.mode:
+        cfg.policy.baseline_pruning_mode = args.mode.strip().lower()
 
     output_dir = Path(args.output_dir)
-    thresholds = args.thresholds
+    ratios = args.ratios
 
     from accelerate import Accelerator
     from torch.utils.data import DataLoader
@@ -81,7 +78,7 @@ def main() -> None:
         loader = accelerator.prepare(loader)
         metric_fn = get_metric_fn(spec.metric)
         results = []
-        for threshold in thresholds:
+        for ratio in ratios:
             metrics = evaluate_dataset(
                 model=model,
                 loader=loader,
@@ -89,26 +86,26 @@ def main() -> None:
                 cost_weight=None,
                 profile=cfg.eval.profile,
                 baseline_name=cfg.policy.baseline_name,
-                baseline_threshold=threshold,
+                baseline_threshold=cfg.policy.baseline_threshold,
                 baseline_uncertainty=cfg.policy.baseline_uncertainty,
                 baseline_vision=cfg.policy.baseline_vision,
                 baseline_seed=cfg.policy.baseline_seed or cfg.training.seed,
                 baseline_target_ratios=cfg.policy.baseline_target_ratios,
                 baseline_bucket_ratios=cfg.policy.baseline_bucket_ratios,
                 baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
-                baseline_pruning_ratio=cfg.policy.baseline_pruning_ratio,
+                baseline_pruning_ratio=ratio,
                 baseline_pruning_mode=cfg.policy.baseline_pruning_mode,
             )
-            metrics["threshold"] = threshold
+            metrics["pruning_ratio"] = ratio
             results.append(metrics)
         results_by_dataset[spec.name] = {"metric": spec.metric, "results": results}
         all_rows.extend(rows_from_results(spec.name, spec.metric, results))
 
     if accelerator.is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
-        write_csv(output_dir / "pareto_threshold.csv", all_rows)
-        write_json(output_dir / "pareto_threshold.json", results_by_dataset)
-        logger.info("Saved pareto sweep to %s", output_dir / "pareto_threshold.csv")
+        write_csv(output_dir / "pareto_pruning.csv", all_rows)
+        write_json(output_dir / "pareto_pruning.json", results_by_dataset)
+        logger.info("Saved pareto sweep to %s", output_dir / "pareto_pruning.csv")
 
 
 if __name__ == "__main__":

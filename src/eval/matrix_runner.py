@@ -78,6 +78,8 @@ def _evaluate_single_process(
                     baseline_target_ratios=cfg.policy.baseline_target_ratios,
                     baseline_bucket_ratios=cfg.policy.baseline_bucket_ratios,
                     baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
+                    baseline_pruning_ratio=cfg.policy.baseline_pruning_ratio,
+                    baseline_pruning_mode=cfg.policy.baseline_pruning_mode,
                 )
                 metrics["lambda_cost"] = value
                 results.append(metrics)
@@ -96,6 +98,8 @@ def _evaluate_single_process(
                 baseline_target_ratios=cfg.policy.baseline_target_ratios,
                 baseline_bucket_ratios=cfg.policy.baseline_bucket_ratios,
                 baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
+                baseline_pruning_ratio=cfg.policy.baseline_pruning_ratio,
+                baseline_pruning_mode=cfg.policy.baseline_pruning_mode,
             )
             metrics["lambda_cost"] = 0.0
             results = [metrics]

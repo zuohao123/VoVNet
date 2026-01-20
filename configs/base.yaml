@@ -21,6 +21,9 @@ policy:
   baseline_target_ratios: null
   baseline_bucket_ratios: null
   baseline_bucket_thresholds: null
+  baseline_pruning_ratio: 1.0
+  baseline_pruning_mode: "stride"
+  finetune_pruning: false
   gumbel_tau: 1.0
   use_straight_through: true
   eval_sample: false

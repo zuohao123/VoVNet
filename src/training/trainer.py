@@ -46,6 +46,7 @@ class Trainer:
         gain_loss_weight: float = 0.0,
         gain_margin: float = 0.0,
         baseline_name: Optional[str] = None,
+        finetune_pruning: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -68,6 +69,7 @@ class Trainer:
         self.gain_loss_weight = gain_loss_weight
         self.gain_margin = gain_margin
         self.baseline_name = normalize_baseline_name(baseline_name)
+        self.finetune_pruning = finetune_pruning
 
     def train(self, epochs: int) -> None:
         """Run the training loop."""
@@ -90,6 +92,10 @@ class Trainer:
             logger.info("Baseline mode enabled: %s", self.baseline_name)
         if self.baseline_name in {"uncertainty_threshold", "random_policy_matched"}:
             raise RuntimeError(f"{self.baseline_name} baseline is eval-only; skip training")
+        if self.baseline_name == "vision_token_pruning_proxy" and not self.finetune_pruning:
+            raise RuntimeError(
+                "vision_token_pruning_proxy is eval-only unless finetune_pruning=true"
+            )
         train_start = time.time()
         window_start = train_start
         window_samples = 0

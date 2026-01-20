@@ -22,6 +22,9 @@ _BASELINE_ALIASES = {
     "threshold": "uncertainty_threshold",
     "random_policy_matched": "random_policy_matched",
     "random_matched": "random_policy_matched",
+    "vision_token_pruning_proxy": "vision_token_pruning_proxy",
+    "pruning_proxy": "vision_token_pruning_proxy",
+    "vision_pruning": "vision_token_pruning_proxy",
 }
 
 _BASELINE_LABELS = {
@@ -58,6 +61,8 @@ def resolve_baseline_actions(
         return no_vision(batch_size, device), _BASELINE_LABELS[normalized], True
     if normalized == "uncertainty_threshold":
         raise ValueError("uncertainty_threshold requires model uncertainty; eval-only")
+    if normalized == "vision_token_pruning_proxy":
+        raise ValueError("vision_token_pruning_proxy requires vision token pruning; eval-only")
     if normalized == "random_policy_matched":
         raise ValueError("random_policy_matched requires configured ratios; eval-only")
     raise ValueError(f"Unknown baseline_name: {name}")

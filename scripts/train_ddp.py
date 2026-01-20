@@ -497,6 +497,10 @@ def main() -> None:
         stage_baseline = normalize_baseline_name(stage["baseline_name"])
         if stage_baseline in {"uncertainty_threshold", "random_policy_matched"}:
             raise RuntimeError(f"{stage_baseline} baseline is eval-only; skip training")
+        if stage_baseline == "vision_token_pruning_proxy" and not cfg.policy.finetune_pruning:
+            raise RuntimeError(
+                "vision_token_pruning_proxy is eval-only unless finetune_pruning=true"
+            )
 
     seed = cfg.training.seed + rank
     set_seed(seed)
