@@ -169,6 +169,7 @@ class BaseVLM(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         pixel_values: Optional[torch.Tensor],
+        image_grid_thw: Optional[torch.Tensor] = None,
         past_key_values: Optional[Any] = None,
         use_cache: bool = True,
     ) -> Any:
@@ -181,6 +182,8 @@ class BaseVLM(nn.Module):
         }
         if pixel_values is not None:
             kwargs["pixel_values"] = pixel_values
+        if image_grid_thw is not None:
+            kwargs["image_grid_thw"] = image_grid_thw
         if past_key_values is not None:
             kwargs["past_key_values"] = past_key_values
         return self._safe_forward(**kwargs)

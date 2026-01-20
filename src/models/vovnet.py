@@ -55,6 +55,7 @@ class VisionInputs:
 
     pixel_values: Optional[Tensor]
     token_counts: Tensor
+    image_grid_thw: Optional[Tensor] = None
 
 
 class VoVNet(nn.Module):
@@ -425,8 +426,14 @@ class VoVNet(nn.Module):
         model: BaseVLM,
     ) -> VisionInputs:
         processed = [self.vision_budget.prepare_image(img, mode) for img in images]
-        pixel_values, token_counts = self._prepare_pixel_values(processed, model=model)
-        return VisionInputs(pixel_values=pixel_values, token_counts=token_counts)
+        pixel_values, token_counts, image_grid_thw = self._prepare_pixel_values(
+            processed, model=model
+        )
+        return VisionInputs(
+            pixel_values=pixel_values,
+            token_counts=token_counts,
+            image_grid_thw=image_grid_thw,
+        )
 
     def _forward_hard_actions(
         self,
@@ -570,12 +577,18 @@ class VoVNet(nn.Module):
             pixel_values = pixel_values.to(input_ids.device, non_blocking=True)
             if pixel_values.device.type == "cuda":
                 pixel_values = pixel_values.contiguous()
+        image_grid_thw = vision_inputs.image_grid_thw
+        if isinstance(image_grid_thw, torch.Tensor):
+            image_grid_thw = image_grid_thw.to(input_ids.device, non_blocking=True)
+            if image_grid_thw.device.type == "cuda":
+                image_grid_thw = image_grid_thw.contiguous()
         if past_key_values is None:
             past_key_values = text_outputs.past_key_values
         outputs = model.forward_with_vision(
             input_ids=input_ids,
             attention_mask=attention_mask,
             pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
             past_key_values=past_key_values,
         )
         tokens = vision_inputs.token_counts.to(outputs.logits.device).float()
@@ -583,8 +596,9 @@ class VoVNet(nn.Module):
 
     def _prepare_pixel_values(
         self, images: List[Image.Image], model: BaseVLM
-    ) -> Tuple[Optional[Tensor], Tensor]:
+    ) -> Tuple[Optional[Tensor], Tensor, Optional[Tensor]]:
         processor = model.processor
+        image_grid_thw = None
         if processor is not None:
             outputs = None
             try:
@@ -609,6 +623,15 @@ class VoVNet(nn.Module):
                     if hasattr(outputs, "get")
                     else getattr(outputs, "pixel_values", None)
                 )
+                grid_thw = (
+                    outputs.get("image_grid_thw")
+                    if hasattr(outputs, "get")
+                    else getattr(outputs, "image_grid_thw", None)
+                )
+                if grid_thw is not None:
+                    image_grid_thw = torch.as_tensor(grid_thw)
+                    if image_grid_thw.ndim == 1:
+                        image_grid_thw = image_grid_thw.unsqueeze(0)
                 if pixel_values is not None:
                     if isinstance(pixel_values, torch.Tensor):
                         pixel_values = pixel_values.contiguous()
@@ -618,13 +641,19 @@ class VoVNet(nn.Module):
                         batch_size=len(images),
                         model=model,
                     )
-                    return pixel_values, token_counts
+                    return pixel_values, token_counts, image_grid_thw
 
         arrays = [np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0 for img in images]
         tensors = [torch.from_numpy(arr).permute(2, 0, 1) for arr in arrays]
         pixel_values = torch.stack(tensors, dim=0)
+        patch_size = self._get_patch_size(model) or self.vision_budget.patch_size
+        patch_size = max(1, int(patch_size))
+        height, width = pixel_values.shape[-2:]
+        grid_h = math.ceil(height / patch_size)
+        grid_w = math.ceil(width / patch_size)
+        image_grid_thw = torch.tensor([[1, grid_h, grid_w]] * pixel_values.shape[0])
         token_counts = self._estimate_tokens_from_pixel_values(pixel_values, model=model)
-        return pixel_values, token_counts
+        return pixel_values, token_counts, image_grid_thw
 
     def _infer_token_counts(
         self,
