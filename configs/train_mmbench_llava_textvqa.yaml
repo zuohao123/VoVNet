@@ -15,7 +15,7 @@ training:
   stage1_lambda_cost: 0.0
   per_device_batch_size: 1
   gradient_accumulation: 4
-  log_every: 30
+  log_every: 100
   mixed_precision: "fp16"
   gradient_checkpointing: true
   deepspeed_stage: 2

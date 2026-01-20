@@ -68,7 +68,7 @@ training:
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   log_every: 10
-  save_every: 500
+  save_every: 2000
   deepspeed_stage: 2
   use_fsdp: false
   gradient_checkpointing: false
