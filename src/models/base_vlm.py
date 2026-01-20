@@ -116,6 +116,32 @@ class BaseVLM(nn.Module):
         """Enable gradient checkpointing if available."""
         if hasattr(self.model, "gradient_checkpointing_enable"):
             self.model.gradient_checkpointing_enable()
+        # Disable cache when checkpointing to avoid transformer warnings.
+        config = getattr(self.model, "config", None)
+        if config is not None and hasattr(config, "use_cache"):
+            config.use_cache = False
+        self._ensure_input_requires_grad()
+
+    def _ensure_input_requires_grad(self) -> None:
+        """Ensure checkpointed layers receive grad-enabled inputs."""
+        if hasattr(self.model, "enable_input_require_grads"):
+            try:
+                self.model.enable_input_require_grads()
+                return
+            except Exception:
+                pass
+        get_embeddings = getattr(self.model, "get_input_embeddings", None)
+        if get_embeddings is None:
+            return
+        embeddings = get_embeddings()
+        if embeddings is None:
+            return
+
+        def _make_inputs_require_grad(_module, _inputs, output):
+            if isinstance(output, torch.Tensor):
+                output.requires_grad_(True)
+
+        embeddings.register_forward_hook(_make_inputs_require_grad)
 
     def apply_lora(
         self,
@@ -195,6 +221,8 @@ class BaseVLM(nn.Module):
         use_cache: bool = True,
     ) -> VLMOutputs:
         """Text-only forward pass."""
+        if getattr(self.model, "gradient_checkpointing", False):
+            use_cache = False
         outputs = self._safe_forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -217,6 +245,8 @@ class BaseVLM(nn.Module):
         use_cache: bool = True,
     ) -> Any:
         """Forward pass that may include vision inputs."""
+        if getattr(self.model, "gradient_checkpointing", False):
+            use_cache = False
         kwargs: Dict[str, Any] = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
