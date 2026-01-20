@@ -566,6 +566,10 @@ class VoVNet(nn.Module):
                 images=images, mode=mode, model=model
             )
         pixel_values = vision_inputs.pixel_values
+        if isinstance(pixel_values, torch.Tensor):
+            pixel_values = pixel_values.to(input_ids.device, non_blocking=True)
+            if pixel_values.device.type == "cuda":
+                pixel_values = pixel_values.contiguous()
         if past_key_values is None:
             past_key_values = text_outputs.past_key_values
         outputs = model.forward_with_vision(
@@ -606,6 +610,8 @@ class VoVNet(nn.Module):
                     else getattr(outputs, "pixel_values", None)
                 )
                 if pixel_values is not None:
+                    if isinstance(pixel_values, torch.Tensor):
+                        pixel_values = pixel_values.contiguous()
                     token_counts = self._infer_token_counts(
                         outputs=outputs,
                         pixel_values=pixel_values,

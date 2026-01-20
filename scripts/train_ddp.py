@@ -161,8 +161,30 @@ def _setup_autocast(mixed_precision: str):
     if mixed_precision == "fp16":
         return torch.cuda.amp.autocast(dtype=torch.float16), torch.cuda.amp.GradScaler()
     if mixed_precision == "bf16":
+        if not torch.cuda.is_bf16_supported():
+            logger.warning("bf16 not supported on this GPU; falling back to fp16.")
+            return torch.cuda.amp.autocast(dtype=torch.float16), torch.cuda.amp.GradScaler()
         return torch.cuda.amp.autocast(dtype=torch.bfloat16), None
     return nullcontext(), None
+
+
+def _configure_cuda(rank: int) -> None:
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    if rank == 0:
+        logger.info(
+            "CUDA config: cudnn_enabled=%s cudnn_available=%s cudnn_version=%s tf32_matmul=%s tf32_cudnn=%s",
+            torch.backends.cudnn.enabled,
+            torch.backends.cudnn.is_available(),
+            torch.backends.cudnn.version(),
+            torch.backends.cuda.matmul.allow_tf32,
+            torch.backends.cudnn.allow_tf32,
+        )
 
 
 def _log_step(
@@ -422,6 +444,17 @@ def main() -> None:
     device = torch.device("cuda", local_rank) if torch.cuda.is_available() else torch.device("cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
+    _configure_cuda(rank)
+
+    if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        if cfg.model.torch_dtype == "bfloat16":
+            if rank == 0:
+                logger.warning("GPU does not support bf16; switching model dtype to fp16.")
+            cfg.model.torch_dtype = "float16"
+        if cfg.training.mixed_precision == "bf16":
+            if rank == 0:
+                logger.warning("GPU does not support bf16; switching mixed_precision to fp16.")
+            cfg.training.mixed_precision = "fp16"
 
     baseline_name = normalize_baseline_name(cfg.policy.baseline_name)
     if baseline_name in {"uncertainty_threshold", "random_policy_matched"}:
