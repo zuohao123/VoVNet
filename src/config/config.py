@@ -93,6 +93,9 @@ class TrainingConfig:
     per_device_batch_size: int = 1
     gradient_accumulation: int = 4
     epochs: int = 1
+    stage1_epochs: int = 0
+    stage1_baseline_name: str | None = None
+    stage1_lambda_cost: float | None = None
     lr: float = 5e-5
     weight_decay: float = 0.0
     warmup_steps: int = 0
@@ -153,6 +156,26 @@ class Config:
         _coerce_types(self)
         if self.training.deepspeed_stage not in (0, 2, 3):
             raise ValueError("deepspeed_stage must be 0, 2, or 3")
+        if self.training.stage1_epochs < 0:
+            raise ValueError("stage1_epochs must be >= 0")
+        if self.training.stage1_epochs > self.training.epochs:
+            raise ValueError("stage1_epochs must be <= total epochs")
+        if self.training.stage1_baseline_name:
+            stage1 = self.training.stage1_baseline_name.strip().lower()
+            if stage1 not in {
+                "always_full",
+                "full",
+                "always_coarse",
+                "coarse",
+                "no_vision",
+                "no_vision_only",
+                "no",
+                "none",
+                "null",
+            }:
+                raise ValueError(
+                    "stage1_baseline_name must be always_full, always_coarse, no_vision, or null"
+                )
         if self.policy.policy_mode not in ("logits", "gain"):
             raise ValueError("policy_mode must be logits or gain")
         if self.policy.fallback_mode not in ("none", "coarse", "full"):
@@ -299,6 +322,10 @@ def _coerce_types(cfg: Config) -> None:
         cfg.training.gradient_accumulation, "training.gradient_accumulation"
     )
     cfg.training.epochs = _to_int(cfg.training.epochs, "training.epochs")
+    cfg.training.stage1_epochs = _to_int(cfg.training.stage1_epochs, "training.stage1_epochs")
+    cfg.training.stage1_lambda_cost = _to_float(
+        cfg.training.stage1_lambda_cost, "training.stage1_lambda_cost", allow_none=True
+    )
     cfg.training.log_every = _to_int(cfg.training.log_every, "training.log_every")
     cfg.training.save_every = _to_int(cfg.training.save_every, "training.save_every")
     cfg.training.deepspeed_stage = _to_int(cfg.training.deepspeed_stage, "training.deepspeed_stage")

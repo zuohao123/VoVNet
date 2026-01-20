@@ -148,6 +148,40 @@ def build_model(cfg: Config) -> VoVNet:
     return model
 
 
+def build_stage_schedule(cfg: Config) -> List[Dict[str, Any]]:
+    stages: List[Dict[str, Any]] = []
+    stage1_epochs = int(cfg.training.stage1_epochs)
+    if stage1_epochs > 0:
+        stage1_baseline = cfg.training.stage1_baseline_name
+        if not stage1_baseline or str(stage1_baseline).strip().lower() in {"none", "null"}:
+            stage1_baseline = "always_full"
+        stage1_lambda = (
+            float(cfg.training.stage1_lambda_cost)
+            if cfg.training.stage1_lambda_cost is not None
+            else 0.0
+        )
+        stages.append(
+            {
+                "name": "stage1_full",
+                "epochs": stage1_epochs,
+                "baseline_name": stage1_baseline,
+                "lambda_cost": stage1_lambda,
+            }
+        )
+
+    stage2_epochs = int(cfg.training.epochs) - stage1_epochs
+    if stage2_epochs > 0:
+        stages.append(
+            {
+                "name": "stage2_policy",
+                "epochs": stage2_epochs,
+                "baseline_name": cfg.policy.baseline_name,
+                "lambda_cost": float(cfg.policy.lambda_cost),
+            }
+        )
+    return stages
+
+
 def _move_batch(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
     for key in ("input_ids", "attention_mask", "labels"):
         if key in batch and isinstance(batch[key], torch.Tensor):
@@ -263,13 +297,14 @@ def _log_step(
     progress_text = f"{progress_pct:.2f}%" if progress_pct is not None else "n/a"
     eta_text = _format_duration(progress.get("eta_seconds"))
     elapsed_text = _format_duration(progress.get("elapsed_seconds"))
+    stage_name = progress.get("stage", "stage")
     lr = float(optimizer.param_groups[0].get("lr", 0.0))
     raw_model = getattr(model, "module", model)
     budget_text = _format_budget(getattr(raw_model, "vision_budget", None))
 
     logger.info(
         (
-            "epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
+            "stage=%s epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
             "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
             "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f avg_gain=%.4f "
             "lr=%.6g budget=%s lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
@@ -277,6 +312,7 @@ def _log_step(
             "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
             "latency_ms=%.2f mem_peak_mb=%.2f tokens_s=%.2f%s"
         ),
+        stage_name,
         epoch,
         epochs,
         step_text,
@@ -456,9 +492,11 @@ def main() -> None:
                 logger.warning("GPU does not support bf16; switching mixed_precision to fp16.")
             cfg.training.mixed_precision = "fp16"
 
-    baseline_name = normalize_baseline_name(cfg.policy.baseline_name)
-    if baseline_name in {"uncertainty_threshold", "random_policy_matched"}:
-        raise RuntimeError(f"{baseline_name} baseline is eval-only; skip training")
+    stages = build_stage_schedule(cfg)
+    for stage in stages:
+        stage_baseline = normalize_baseline_name(stage["baseline_name"])
+        if stage_baseline in {"uncertainty_threshold", "random_policy_matched"}:
+            raise RuntimeError(f"{stage_baseline} baseline is eval-only; skip training")
 
     seed = cfg.training.seed + rank
     set_seed(seed)
@@ -574,6 +612,7 @@ def main() -> None:
             world_size,
             grad_accum,
         )
+        logger.info("Stage schedule: %s", stages)
 
     global_step = 0
     train_start = time.time()
@@ -589,183 +628,201 @@ def main() -> None:
         "gain_loss": 0.0,
     }
 
-    for epoch in range(cfg.training.epochs):
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
-        model.train()
-        for step, batch in enumerate(train_loader):
-            if train_profiler.enabled:
-                train_profiler.start()
-            batch = _move_batch(batch, device)
-            batch_size = batch["input_ids"].size(0)
-            actions, _, drop_images = resolve_baseline_actions(
-                baseline_name, batch_size, batch["input_ids"].device
+    epoch_idx = 0
+    for stage in stages:
+        stage_name = stage["name"]
+        stage_epochs = int(stage["epochs"])
+        stage_baseline = normalize_baseline_name(stage["baseline_name"])
+        stage_lambda_cost = float(stage["lambda_cost"])
+        if rank == 0:
+            logger.info(
+                "Starting %s: epochs=%s baseline=%s lambda_cost=%.4f",
+                stage_name,
+                stage_epochs,
+                stage_baseline,
+                stage_lambda_cost,
             )
-            is_last = step + 1 == steps_per_epoch
-            sync_grad = ((step + 1) % grad_accum == 0) or is_last
-            if distributed and isinstance(model, DDP) and not sync_grad:
-                sync_ctx = model.no_sync()
-            else:
-                sync_ctx = nullcontext()
+        for local_epoch in range(stage_epochs):
+            epoch = epoch_idx + local_epoch
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+            model.train()
+            for step, batch in enumerate(train_loader):
+                if train_profiler.enabled:
+                    train_profiler.start()
+                batch = _move_batch(batch, device)
+                batch_size = batch["input_ids"].size(0)
+                actions, _, drop_images = resolve_baseline_actions(
+                    stage_baseline, batch_size, batch["input_ids"].device
+                )
+                is_last = step + 1 == steps_per_epoch
+                sync_grad = ((step + 1) % grad_accum == 0) or is_last
+                if distributed and isinstance(model, DDP) and not sync_grad:
+                    sync_ctx = model.no_sync()
+                else:
+                    sync_ctx = nullcontext()
 
-            with sync_ctx:
-                with autocast_ctx:
-                    if actions is None:
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch["attention_mask"],
-                            images=batch.get("images"),
-                            labels=batch.get("labels"),
-                            compute_gain=cfg.policy.gain_supervision,
+                with sync_ctx:
+                    with autocast_ctx:
+                        if actions is None:
+                            outputs = model(
+                                input_ids=batch["input_ids"],
+                                attention_mask=batch["attention_mask"],
+                                images=batch.get("images"),
+                                labels=batch.get("labels"),
+                                compute_gain=cfg.policy.gain_supervision,
+                            )
+                        else:
+                            images = None if drop_images else batch.get("images")
+                            raw_model = model.module if isinstance(model, DDP) else model
+                            outputs = raw_model.forward_with_actions(
+                                input_ids=batch["input_ids"],
+                                attention_mask=batch["attention_mask"],
+                                images=images,
+                                actions=actions,
+                                labels=batch.get("labels"),
+                            )
+                        losses = compute_total_loss(
+                            outputs["logits"],
+                            outputs.get("labels"),
+                            outputs["expected_cost"],
+                            stage_lambda_cost,
+                            calibration_value=None,
+                            lambda_cal=cfg.policy.calibration_lambda,
+                            gain_pred=outputs.get("gain_pred"),
+                            gain_true=outputs.get("gain_true"),
+                            gain_loss_type=cfg.policy.gain_loss_type,
+                            lambda_gain=cfg.policy.gain_loss_weight,
+                            gain_margin=cfg.policy.gain_margin,
                         )
+                        loss = losses["total_loss"] / grad_accum
+
+                    if scaler is not None:
+                        scaler.scale(loss).backward()
                     else:
-                        images = None if drop_images else batch.get("images")
-                        raw_model = model.module if isinstance(model, DDP) else model
-                        outputs = raw_model.forward_with_actions(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch["attention_mask"],
-                            images=images,
-                            actions=actions,
-                            labels=batch.get("labels"),
-                        )
-                    losses = compute_total_loss(
-                        outputs["logits"],
-                        outputs.get("labels"),
-                        outputs["expected_cost"],
-                        cfg.policy.lambda_cost,
-                        calibration_value=None,
-                        lambda_cal=cfg.policy.calibration_lambda,
-                        gain_pred=outputs.get("gain_pred"),
-                        gain_true=outputs.get("gain_true"),
-                        gain_loss_type=cfg.policy.gain_loss_type,
-                        lambda_gain=cfg.policy.gain_loss_weight,
-                        gain_margin=cfg.policy.gain_margin,
+                        loss.backward()
+
+                if sync_grad:
+                    if scaler is not None:
+                        scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                    if scaler is not None:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+                if train_profiler.enabled:
+                    seq_len = batch["input_ids"].size(1)
+                    train_profiler.stop(
+                        batch_size=batch_size,
+                        seq_len=seq_len,
+                        actions=outputs["actions"],
                     )
-                    loss = losses["total_loss"] / grad_accum
 
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                window_samples += batch_size
+                window_tokens += int(batch["input_ids"].numel())
+                window_batches += 1
+                window_losses["total_loss"] += float(losses["total_loss"].item()) * batch_size
+                window_losses["task_loss"] += float(losses["task_loss"].item()) * batch_size
+                window_losses["cost_loss"] += float(losses["cost_loss"].item()) * batch_size
+                window_losses["calibration_loss"] += float(
+                    losses["calibration_loss"].item()
+                ) * batch_size
+                window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
 
-            if sync_grad:
-                if scaler is not None:
-                    scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                if scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+                if global_step % cfg.training.log_every == 0 and rank == 0:
+                    avg_losses = {
+                        key: value / max(1, window_samples)
+                        for key, value in window_losses.items()
+                    }
+                    elapsed = time.time() - train_start
+                    step_count = global_step + 1
+                    progress_pct = 100.0 * step_count / total_steps if total_steps else None
+                    eta_seconds = (
+                        (total_steps - step_count) * (elapsed / max(1, step_count))
+                        if total_steps
+                        else None
+                    )
+                    window_elapsed = max(1e-9, time.time() - window_start)
+                    window_samples_global = window_samples * world_size
+                    window_tokens_global = window_tokens * world_size
+                    window_stats = {
+                        "samples": window_samples_global,
+                        "tokens": window_tokens_global,
+                        "batches": window_batches,
+                        "seconds": window_elapsed,
+                        "samples_s": window_samples_global / window_elapsed,
+                        "tokens_s": window_tokens_global / window_elapsed,
+                        "world_size": world_size,
+                    }
+                    progress = {
+                        "stage": stage_name,
+                        "epoch": epoch + 1,
+                        "epochs": cfg.training.epochs,
+                        "step_in_epoch": step + 1,
+                        "steps_per_epoch": steps_per_epoch,
+                        "global_step": step_count,
+                        "total_steps": total_steps,
+                        "progress_pct": progress_pct,
+                        "eta_seconds": eta_seconds,
+                        "elapsed_seconds": elapsed,
+                    }
+                    _log_step(
+                        avg_losses,
+                        outputs,
+                        progress,
+                        window_stats,
+                        optimizer,
+                        stage_lambda_cost,
+                        train_profiler,
+                        model,
+                    )
+                    window_start = time.time()
+                    window_samples = 0
+                    window_tokens = 0
+                    window_batches = 0
+                    for key in window_losses:
+                        window_losses[key] = 0.0
 
-            if train_profiler.enabled:
-                seq_len = batch["input_ids"].size(1)
-                train_profiler.stop(
-                    batch_size=batch_size,
-                    seq_len=seq_len,
-                    actions=outputs["actions"],
+                if (
+                    cfg.training.save_every > 0
+                    and global_step > 0
+                    and global_step % cfg.training.save_every == 0
+                    and rank == 0
+                ):
+                    ckpt_path = output_dir / f"checkpoint-{global_step}.pt"
+                    raw_model = model.module if isinstance(model, DDP) else model
+                    torch.save(
+                        {
+                            "model": raw_model.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(),
+                            "global_step": global_step,
+                        },
+                        ckpt_path,
+                    )
+                    logger.info("Saved checkpoint to %s", ckpt_path)
+
+                global_step += 1
+
+            if eval_loader is not None:
+                if distributed:
+                    dist.barrier()
+                metrics = _evaluate(
+                    model=model,
+                    loader=eval_loader,
+                    lambda_cost=stage_lambda_cost,
+                    baseline_name=stage_baseline,
+                    device=device,
+                    distributed=distributed,
                 )
+                if rank == 0:
+                    logger.info("Eval metrics: %s", metrics)
 
-            window_samples += batch_size
-            window_tokens += int(batch["input_ids"].numel())
-            window_batches += 1
-            window_losses["total_loss"] += float(losses["total_loss"].item()) * batch_size
-            window_losses["task_loss"] += float(losses["task_loss"].item()) * batch_size
-            window_losses["cost_loss"] += float(losses["cost_loss"].item()) * batch_size
-            window_losses["calibration_loss"] += float(
-                losses["calibration_loss"].item()
-            ) * batch_size
-            window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
-
-            if global_step % cfg.training.log_every == 0 and rank == 0:
-                avg_losses = {
-                    key: value / max(1, window_samples)
-                    for key, value in window_losses.items()
-                }
-                elapsed = time.time() - train_start
-                step_count = global_step + 1
-                progress_pct = 100.0 * step_count / total_steps if total_steps else None
-                eta_seconds = (
-                    (total_steps - step_count) * (elapsed / max(1, step_count))
-                    if total_steps
-                    else None
-                )
-                window_elapsed = max(1e-9, time.time() - window_start)
-                window_samples_global = window_samples * world_size
-                window_tokens_global = window_tokens * world_size
-                window_stats = {
-                    "samples": window_samples_global,
-                    "tokens": window_tokens_global,
-                    "batches": window_batches,
-                    "seconds": window_elapsed,
-                    "samples_s": window_samples_global / window_elapsed,
-                    "tokens_s": window_tokens_global / window_elapsed,
-                    "world_size": world_size,
-                }
-                progress = {
-                    "epoch": epoch + 1,
-                    "epochs": cfg.training.epochs,
-                    "step_in_epoch": step + 1,
-                    "steps_per_epoch": steps_per_epoch,
-                    "global_step": step_count,
-                    "total_steps": total_steps,
-                    "progress_pct": progress_pct,
-                    "eta_seconds": eta_seconds,
-                    "elapsed_seconds": elapsed,
-                }
-                _log_step(
-                    avg_losses,
-                    outputs,
-                    progress,
-                    window_stats,
-                    optimizer,
-                    cfg.policy.lambda_cost,
-                    train_profiler,
-                    model,
-                )
-                window_start = time.time()
-                window_samples = 0
-                window_tokens = 0
-                window_batches = 0
-                for key in window_losses:
-                    window_losses[key] = 0.0
-
-            if (
-                cfg.training.save_every > 0
-                and global_step > 0
-                and global_step % cfg.training.save_every == 0
-                and rank == 0
-            ):
-                ckpt_path = output_dir / f"checkpoint-{global_step}.pt"
-                raw_model = model.module if isinstance(model, DDP) else model
-                torch.save(
-                    {
-                        "model": raw_model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict(),
-                        "global_step": global_step,
-                    },
-                    ckpt_path,
-                )
-                logger.info("Saved checkpoint to %s", ckpt_path)
-
-            global_step += 1
-
-        if eval_loader is not None:
-            if distributed:
-                dist.barrier()
-            metrics = _evaluate(
-                model=model,
-                loader=eval_loader,
-                lambda_cost=cfg.policy.lambda_cost,
-                baseline_name=baseline_name,
-                device=device,
-                distributed=distributed,
-            )
-            if rank == 0:
-                logger.info("Eval metrics: %s", metrics)
+        epoch_idx += stage_epochs
 
     if distributed:
         dist.destroy_process_group()

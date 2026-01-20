@@ -10,6 +10,9 @@ model:
 
 training:
   epochs: 2
+  stage1_epochs: 1
+  stage1_baseline_name: "always_full"
+  stage1_lambda_cost: 0.0
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 3
