@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -129,15 +130,54 @@ class BaseVLM(nn.Module):
         except Exception as exc:  # pragma: no cover - import guard
             raise RuntimeError("peft is required for LoRA training") from exc
 
+        logger = logging.getLogger(__name__)
+        selected_targets = self._resolve_lora_targets(target_modules)
+        if selected_targets != target_modules:
+            logger.warning(
+                "LoRA target_modules not found; falling back to %s",
+                selected_targets,
+            )
+
         config = LoraConfig(
             r=r,
             lora_alpha=alpha,
             lora_dropout=dropout,
-            target_modules=target_modules,
+            target_modules=selected_targets,
             bias="none",
             task_type="CAUSAL_LM",
         )
         self.model = get_peft_model(self.model, config)
+
+    def _resolve_lora_targets(self, target_modules: list[str]) -> list[str]:
+        if not target_modules:
+            return target_modules
+        linear_names = [
+            name
+            for name, module in self.model.named_modules()
+            if isinstance(module, nn.Linear)
+        ]
+        for target in target_modules:
+            if any(name.endswith(target) for name in linear_names):
+                return target_modules
+
+        common = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+            "proj",
+            "wq",
+            "wk",
+            "wv",
+            "wo",
+        ]
+        fallback = {name.split(".")[-1] for name in linear_names if name.split(".")[-1] in common}
+        if fallback:
+            return sorted(fallback)
+        return target_modules
 
     def freeze_vision_encoder(self) -> None:
         """Freeze vision-related parameters by name heuristic."""

@@ -508,6 +508,31 @@ def main() -> None:
     model = build_model(cfg).to(device)
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    trainable_base = [
+        p for p in model.base_vlm.model.parameters() if p.requires_grad
+    ]
+    if rank == 0:
+        logger.info(
+            "Trainable params: total=%s base_vlm=%s",
+            len(trainable_params),
+            len(trainable_base),
+        )
+    if not trainable_params:
+        raise RuntimeError(
+            "No trainable parameters found. Check LoRA target_modules or disable use_lora."
+        )
+    if not trainable_base:
+        for stage in stages:
+            if (
+                stage["name"].startswith("stage1")
+                and float(stage["lambda_cost"]) == 0.0
+                and not cfg.policy.gain_supervision
+            ):
+                raise RuntimeError(
+                    "Stage1 has no trainable base_vlm params (LoRA not attached). "
+                    "Update LoRA target_modules or disable use_lora before running stage1."
+                )
 
     train_dataset = build_dataset(cfg, "train")
     eval_dataset = build_dataset(cfg, "eval") if cfg.data.eval_jsonl else None
