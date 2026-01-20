@@ -645,6 +645,7 @@ def main() -> None:
     window_samples = 0
     window_tokens = 0
     window_batches = 0
+    accum_has_grad = False
     window_losses: Dict[str, float] = {
         "total_loss": 0.0,
         "task_loss": 0.0,
@@ -727,22 +728,32 @@ def main() -> None:
                             scaler.scale(loss).backward()
                         else:
                             loss.backward()
+                        did_backward = True
+                        accum_has_grad = True
                     elif rank == 0:
                         logger.warning(
                             "Skipping backward because loss has no grad_fn; check labels/LoRA."
                         )
 
                 if sync_grad:
-                    if scaler is not None:
-                        scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                    if scaler is not None:
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
+                    if accum_has_grad:
+                        if scaler is not None:
+                            scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), cfg.training.max_grad_norm
+                        )
+                        if scaler is not None:
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad(set_to_none=True)
+                    elif rank == 0:
+                        logger.warning(
+                            "Skipping optimizer step because no gradients were accumulated."
+                        )
+                    accum_has_grad = False
 
                 if train_profiler.enabled:
                     seq_len = batch["input_ids"].size(1)
