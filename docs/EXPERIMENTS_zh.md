@@ -12,6 +12,11 @@
 - 使用 `scripts/eval.py`（matrix runner）或调用同一评测核心 `src/eval/matrix.evaluate_dataset` 的脚本。
 - 所有 baseline 必须使用相同 prompt 模板与解码设置（来自配置）。
 
+**后台执行**
+- 先创建日志目录：`mkdir -p logs`
+- 训练/评测命令统一使用：`nohup <cmd> > logs/<name>.out 2>&1 &`
+- 同一代码块内的后台命令建议逐条执行，避免并发占满 GPU。
+
 **统一设置（实验间不可变）**
 - Prompt 模板：`data.prompt_template`
 - 解码：`eval.max_new_tokens / num_beams / do_sample / temperature`
@@ -52,9 +57,10 @@
 
 **命令**
 ```bash
-torchrun --nproc_per_node 8 scripts/train_ddp.py \
+nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml
+  --config configs/train_mmbench_llava_textvqa.yaml \
+  > logs/train_ddp_mmbench_llava_textvqa.out 2>&1 &
 ```
 
 **预期输出**
@@ -75,12 +81,13 @@ torchrun --nproc_per_node 8 scripts/train_ddp.py \
 
 **命令**
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --output_dir outputs/pareto_vovnet \
-  --pareto 0 0.01 0.02 0.05 0.1
+  --pareto 0 0.01 0.02 0.05 0.1 \
+  > logs/eval_pareto_vovnet.out 2>&1 &
 ```
 
 **预期输出**
@@ -106,13 +113,14 @@ YAML
 
 **命令（对多个 seed 重复）**
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/seed_42.yaml \
   --output_dir outputs/pareto_vovnet_seed42 \
-  --pareto 0.02 0.05 0.1
+  --pareto 0.02 0.05 0.1 \
+  > logs/eval_pareto_vovnet_seed42.out 2>&1 &
 ```
 
 **预期输出**
@@ -132,39 +140,43 @@ python scripts/eval.py \
 - `policy.baseline_name: "always_full" | "always_coarse" | "no_vision"`
 
 **命令**
+注：以下后台评测命令建议逐条执行。
 ```bash
 cat > configs/baseline_always_full.yaml <<'YAML'
 policy:
   baseline_name: "always_full"
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/baseline_always_full
+  --output_dir outputs/baseline_always_full \
+  > logs/eval_baseline_always_full.out 2>&1 &
 
 cat > configs/baseline_always_coarse.yaml <<'YAML'
 policy:
   baseline_name: "always_coarse"
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_always_coarse.yaml \
-  --output_dir outputs/baseline_always_coarse
+  --output_dir outputs/baseline_always_coarse \
+  > logs/eval_baseline_always_coarse.out 2>&1 &
 
 cat > configs/baseline_no_vision.yaml <<'YAML'
 policy:
   baseline_name: "no_vision"
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_no_vision.yaml \
-  --output_dir outputs/baseline_no_vision
+  --output_dir outputs/baseline_no_vision \
+  > logs/eval_baseline_no_vision.out 2>&1 &
 ```
 
 **预期输出**
@@ -193,24 +205,26 @@ policy:
   baseline_threshold: 0.50
   baseline_vision: "full"
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_uncertainty_entropy_full.yaml \
-  --output_dir outputs/baseline_uncertainty_t0_50
+  --output_dir outputs/baseline_uncertainty_t0_50 \
+  > logs/eval_baseline_uncertainty_t0_50.out 2>&1 &
 ```
 
 **命令（Pareto 扫描）**
 ```bash
-python scripts/pareto_threshold.py \
+nohup python scripts/pareto_threshold.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --output_dir outputs/pareto_threshold_entropy_full \
   --thresholds 0.10 0.20 0.30 0.40 0.50 \
   --uncertainty entropy \
-  --vision full
+  --vision full \
+  > logs/pareto_threshold_entropy_full.out 2>&1 &
 ```
 
 **预期输出**
@@ -273,12 +287,13 @@ with open("configs/baseline_random_matched.yaml", "w") as f:
 print("Wrote configs/baseline_random_matched.yaml with ratios", ratio)
 PY
 
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_random_matched.yaml \
-  --output_dir outputs/baseline_random_matched
+  --output_dir outputs/baseline_random_matched \
+  > logs/eval_baseline_random_matched.out 2>&1 &
 ```
 
 **预期输出**
@@ -310,23 +325,25 @@ policy:
   baseline_pruning_ratio: 0.50
   baseline_pruning_mode: "stride"
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_pruning_ratio_050.yaml \
-  --output_dir outputs/baseline_pruning_ratio_050
+  --output_dir outputs/baseline_pruning_ratio_050 \
+  > logs/eval_baseline_pruning_ratio_050.out 2>&1 &
 ```
 
 **命令（Pareto 扫描）**
 ```bash
-python scripts/pareto_pruning.py \
+nohup python scripts/pareto_pruning.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --output_dir outputs/pareto_pruning_stride \
   --ratios 1.0 0.75 0.50 0.25 \
-  --mode stride
+  --mode stride \
+  > logs/pareto_pruning_stride.out 2>&1 &
 ```
 
 **预期输出**
@@ -350,11 +367,12 @@ python scripts/pareto_pruning.py \
 
 **命令**
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --dataset_config configs/eval_matrix.yaml \
-  --output_dir outputs/generalization_vovnet
+  --output_dir outputs/generalization_vovnet \
+  > logs/eval_generalization_vovnet.out 2>&1 &
 ```
 
 **预期输出**
@@ -391,10 +409,11 @@ cat > configs/ablate_soft_mixture.yaml <<'YAML'
 policy:
   use_straight_through: false
 YAML
-torchrun --nproc_per_node 8 scripts/train_ddp.py \
+nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/ablate_soft_mixture.yaml
+  --config configs/ablate_soft_mixture.yaml \
+  > logs/train_ddp_soft_mixture.out 2>&1 &
 ```
 
 ### D3. 成本项消融（lambda_cost=0 vs >0）
@@ -404,10 +423,11 @@ cat > configs/ablate_lambda0.yaml <<'YAML'
 policy:
   lambda_cost: 0.0
 YAML
-torchrun --nproc_per_node 8 scripts/train_ddp.py \
+nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/ablate_lambda0.yaml
+  --config configs/ablate_lambda0.yaml \
+  > logs/train_ddp_lambda0.out 2>&1 &
 ```
 
 ### D4. 动作空间消融（二分类 vs 三分类）
@@ -432,12 +452,13 @@ policy:
   fallback_mode: "full"
   fallback_entropy_threshold: 0.50
 YAML
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/fallback_full.yaml \
-  --output_dir outputs/fallback_full
+  --output_dir outputs/fallback_full \
+  > logs/eval_fallback_full.out 2>&1 &
 ```
 
 **TODO**
@@ -461,29 +482,33 @@ YAML
 ```
 
 **命令**
+注：以下 profile 命令建议逐条执行。
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/profile_eval.yaml \
-  --output_dir outputs/profile_vovnet
+  --output_dir outputs/profile_vovnet \
+  > logs/profile_vovnet.out 2>&1 &
 
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/profile_always_full
+  --output_dir outputs/profile_always_full \
+  > logs/profile_always_full.out 2>&1 &
 
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_coarse.yaml \
-  --output_dir outputs/profile_always_coarse
+  --output_dir outputs/profile_always_coarse \
+  > logs/profile_always_coarse.out 2>&1 &
 ```
 
 ### F2. KV cache 复用开关
@@ -562,12 +587,13 @@ PY
 
 **命令**
 ```bash
-python scripts/oracle_action.py \
+nohup python scripts/oracle_action.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --output_dir outputs/oracle_action \
-  --max_samples 200
+  --max_samples 200 \
+  > logs/oracle_action.out 2>&1 &
 ```
 
 **预期输出**
@@ -580,37 +606,41 @@ python scripts/oracle_action.py \
 
 1) 训练：
 ```bash
-torchrun --nproc_per_node 8 scripts/train_ddp.py \
+nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml
+  --config configs/train_mmbench_llava_textvqa.yaml \
+  > logs/train_ddp_mvp.out 2>&1 &
 ```
 
 2) VoVNet Pareto（3 个点）：
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --output_dir outputs/pareto_vovnet_mvp \
-  --pareto 0 0.05 0.1
+  --pareto 0 0.05 0.1 \
+  > logs/eval_pareto_vovnet_mvp.out 2>&1 &
 ```
 
 3) 固定基线（Always-Full + No-Vision）
 注：需要先执行 B1 生成 baseline 配置文件。
 ```bash
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/baseline_always_full_mvp
+  --output_dir outputs/baseline_always_full_mvp \
+  > logs/eval_baseline_always_full_mvp.out 2>&1 &
 
-python scripts/eval.py \
+nohup python scripts/eval.py \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
   --config configs/eval.yaml \
   --config configs/baseline_no_vision.yaml \
-  --output_dir outputs/baseline_no_vision_mvp
+  --output_dir outputs/baseline_no_vision_mvp \
+  > logs/eval_baseline_no_vision_mvp.out 2>&1 &
 ```
 
 ---

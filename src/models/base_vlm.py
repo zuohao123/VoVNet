@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+from torch.nn import functional as F
 from torch import nn
 
 def _ensure_torch_compiler_compat() -> None:
@@ -51,6 +52,12 @@ class VisionPruningSpec:
     mode: str = "stride"
     min_tokens: int = 1
     keep_counts: Optional[torch.Tensor] = None
+    enable_prune: bool = False
+    prune_ratio: float = 1.0
+    prune_mode: str = "topk_norm"
+    merge_weight: str = "norm"
+    pool_factor: int = 1
+    image_grid_thw: Optional[torch.Tensor] = None
 
 
 class BaseVLM(nn.Module):
@@ -279,6 +286,178 @@ class BaseVLM(nn.Module):
             pruned = pruned.squeeze(0)
         return pruned, indices
 
+    def _build_merge_plan(
+        self,
+        embeds: torch.Tensor,
+        keep_tokens: int,
+        mode: str,
+        weight_mode: str,
+    ) -> list[tuple[str, int, int, float, float]]:
+        tokens = embeds.shape[0]
+        if keep_tokens >= tokens:
+            return [("keep", idx, -1, 1.0, 0.0) for idx in range(tokens)]
+
+        merge_needed = max(0, tokens - keep_tokens)
+        embeds_f = embeds.float()
+        if mode == "merge_l2":
+            sim = -torch.cdist(embeds_f, embeds_f, p=2)
+        else:
+            normed = F.normalize(embeds_f, dim=-1, eps=1e-6)
+            sim = normed @ normed.T
+        sim.fill_diagonal_(-float("inf"))
+        best = torch.argmax(sim, dim=-1)
+        scores = sim[torch.arange(tokens, device=embeds.device), best]
+        pairs = sorted(
+            [(float(scores[i].item()), int(i), int(best[i].item())) for i in range(tokens)],
+            reverse=True,
+        )
+
+        used = set()
+        anchors: dict[int, tuple[int, float, float]] = {}
+        partners: set[int] = set()
+        for _, i, j in pairs:
+            if len(anchors) >= merge_needed:
+                break
+            if i == j or i in used or j in used:
+                continue
+            anchor = min(i, j)
+            partner = max(i, j)
+            if anchor in used or partner in used:
+                continue
+            if weight_mode == "norm":
+                w1 = float(embeds_f[anchor].norm().item())
+                w2 = float(embeds_f[partner].norm().item())
+                if w1 + w2 == 0.0:
+                    w1 = 1.0
+                    w2 = 1.0
+            else:
+                w1 = 1.0
+                w2 = 1.0
+            anchors[anchor] = (partner, w1, w2)
+            partners.add(partner)
+            used.add(anchor)
+            used.add(partner)
+
+        plan: list[tuple[str, int, int, float, float]] = []
+        for idx in range(tokens):
+            if idx in partners:
+                continue
+            if idx in anchors:
+                partner, w1, w2 = anchors[idx]
+                plan.append(("merge", idx, partner, w1, w2))
+            else:
+                plan.append(("keep", idx, -1, 1.0, 0.0))
+        return plan
+
+    def _apply_merge_plan(
+        self, embeds: torch.Tensor, plan: list[tuple[str, int, int, float, float]]
+    ) -> torch.Tensor:
+        merged: list[torch.Tensor] = []
+        for kind, idx, partner, w1, w2 in plan:
+            if kind == "merge":
+                denom = max(w1 + w2, 1e-6)
+                merged.append((w1 * embeds[idx] + w2 * embeds[partner]) / denom)
+            else:
+                merged.append(embeds[idx])
+        return torch.stack(merged, dim=0)
+
+    def _pool_by_grid(
+        self,
+        embeds: torch.Tensor,
+        grid_thw: Optional[torch.Tensor],
+        pool_factor: int,
+    ) -> Optional[torch.Tensor]:
+        if pool_factor <= 1:
+            return embeds
+        if grid_thw is None:
+            return None
+        if embeds.dim() == 2:
+            embeds = embeds.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+        grid = grid_thw
+        if grid.dim() == 1:
+            grid = grid.unsqueeze(0)
+        batch, tokens, dim = embeds.shape
+        pooled_list: list[torch.Tensor] = []
+        for i in range(batch):
+            frames, height, width = [int(x) for x in grid[i].tolist()]
+            total = frames * height * width
+            if total <= 0 or total != tokens:
+                return None
+            grid_view = embeds[i].view(frames, height, width, dim).permute(0, 3, 1, 2)
+            pooled = F.avg_pool2d(
+                grid_view,
+                kernel_size=pool_factor,
+                stride=pool_factor,
+                ceil_mode=True,
+            )
+            pooled = pooled.permute(0, 2, 3, 1).reshape(-1, dim)
+            pooled_list.append(pooled)
+        lengths = {item.shape[0] for item in pooled_list}
+        if len(lengths) != 1:
+            raise ValueError("pool_factor produced uneven token counts; use batch_size=1")
+        pooled = torch.stack(pooled_list, dim=0)
+        if squeeze:
+            pooled = pooled.squeeze(0)
+        return pooled
+
+    def _merge_embeddings(
+        self, embeds: torch.Tensor, spec: VisionPruningSpec
+    ) -> Tuple[torch.Tensor, list[list[tuple[str, int, int, float, float]]], torch.Tensor]:
+        if embeds.dim() == 2:
+            embeds = embeds.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+        batch, tokens, _ = embeds.shape
+        keep_counts = spec.keep_counts
+        if keep_counts is None:
+            keep = max(spec.min_tokens, int(round(tokens * float(spec.ratio))))
+            keep_counts = torch.full(
+                (batch,), keep, device=embeds.device, dtype=torch.long
+            )
+        else:
+            keep_counts = keep_counts.to(device=embeds.device, dtype=torch.long)
+            if keep_counts.numel() == 1 and batch > 1:
+                keep_counts = keep_counts.expand(batch)
+        keep_counts = torch.clamp(keep_counts, min=spec.min_tokens, max=tokens)
+
+        plans: list[list[tuple[str, int, int, float, float]]] = []
+        merged_list: list[torch.Tensor] = []
+        for i in range(batch):
+            plan = self._build_merge_plan(
+                embeds[i], int(keep_counts[i].item()), spec.mode, spec.merge_weight
+            )
+            plans.append(plan)
+            merged_list.append(self._apply_merge_plan(embeds[i], plan))
+        lengths = {item.shape[0] for item in merged_list}
+        if len(lengths) != 1:
+            raise ValueError("merge_ratio produced uneven token counts; use batch_size=1")
+        merged = torch.stack(merged_list, dim=0)
+        if squeeze:
+            merged = merged.squeeze(0)
+        return merged, plans, keep_counts
+
+    def _merge_by_plan(
+        self,
+        embeds: torch.Tensor,
+        plans: list[list[tuple[str, int, int, float, float]]],
+    ) -> torch.Tensor:
+        if embeds.dim() == 2:
+            embeds = embeds.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+        merged = torch.stack(
+            [self._apply_merge_plan(embeds[i], plans[i]) for i in range(embeds.size(0))],
+            dim=0,
+        )
+        if squeeze:
+            merged = merged.squeeze(0)
+        return merged
+
     def _prune_by_indices(
         self, embeds: torch.Tensor, indices: list[torch.Tensor]
     ) -> torch.Tensor:
@@ -300,6 +479,89 @@ class BaseVLM(nn.Module):
         if isinstance(outputs, tuple) and len(outputs) >= 2:
             image_embeds, deepstack = outputs[:2]
             if isinstance(image_embeds, torch.Tensor):
+                if spec.mode == "pool":
+                    pooled_embeds = self._pool_by_grid(
+                        image_embeds, spec.image_grid_thw, spec.pool_factor
+                    )
+                    if pooled_embeds is None:
+                        pruned_embeds, indices = self._prune_embeddings(image_embeds, spec)
+                        pruned_deepstack = deepstack
+                        if isinstance(deepstack, torch.Tensor):
+                            pruned_deepstack = self._prune_by_indices(deepstack, indices)
+                        elif isinstance(deepstack, (list, tuple)):
+                            pruned_list = []
+                            for item in deepstack:
+                                if isinstance(item, torch.Tensor):
+                                    pruned_list.append(self._prune_by_indices(item, indices))
+                                else:
+                                    pruned_list.append(item)
+                            pruned_deepstack = type(deepstack)(pruned_list)
+                        return (pruned_embeds, pruned_deepstack, *outputs[2:])
+
+                    pooled_deepstack = deepstack
+                    if isinstance(deepstack, torch.Tensor):
+                        pooled = self._pool_by_grid(
+                            deepstack, spec.image_grid_thw, spec.pool_factor
+                        )
+                        pooled_deepstack = pooled if pooled is not None else deepstack
+                    elif isinstance(deepstack, (list, tuple)):
+                        pooled_list = []
+                        for item in deepstack:
+                            if isinstance(item, torch.Tensor):
+                                pooled = self._pool_by_grid(
+                                    item, spec.image_grid_thw, spec.pool_factor
+                                )
+                                pooled_list.append(pooled if pooled is not None else item)
+                            else:
+                                pooled_list.append(item)
+                        pooled_deepstack = type(deepstack)(pooled_list)
+                    return (pooled_embeds, pooled_deepstack, *outputs[2:])
+
+                if spec.mode.startswith("merge_"):
+                    merged_embeds, plans, merge_counts = self._merge_embeddings(
+                        image_embeds, spec
+                    )
+                    merged_deepstack = deepstack
+                    if isinstance(deepstack, torch.Tensor):
+                        merged_deepstack = self._merge_by_plan(deepstack, plans)
+                    elif isinstance(deepstack, (list, tuple)):
+                        merged_list = []
+                        for item in deepstack:
+                            if isinstance(item, torch.Tensor):
+                                merged_list.append(self._merge_by_plan(item, plans))
+                            else:
+                                merged_list.append(item)
+                        merged_deepstack = type(deepstack)(merged_list)
+
+                    if spec.enable_prune and spec.prune_ratio < 1.0:
+                        prune_counts = self.compute_pruned_counts(
+                            merge_counts, spec.prune_ratio, spec.min_tokens
+                        )
+                        prune_spec = VisionPruningSpec(
+                            ratio=spec.prune_ratio,
+                            mode=spec.prune_mode,
+                            min_tokens=spec.min_tokens,
+                            keep_counts=prune_counts,
+                        )
+                        pruned_embeds, indices = self._prune_embeddings(
+                            merged_embeds, prune_spec
+                        )
+                        pruned_deepstack = merged_deepstack
+                        if isinstance(merged_deepstack, torch.Tensor):
+                            pruned_deepstack = self._prune_by_indices(
+                                merged_deepstack, indices
+                            )
+                        elif isinstance(merged_deepstack, (list, tuple)):
+                            pruned_list = []
+                            for item in merged_deepstack:
+                                if isinstance(item, torch.Tensor):
+                                    pruned_list.append(self._prune_by_indices(item, indices))
+                                else:
+                                    pruned_list.append(item)
+                            pruned_deepstack = type(merged_deepstack)(pruned_list)
+                        return (pruned_embeds, pruned_deepstack, *outputs[2:])
+                    return (merged_embeds, merged_deepstack, *outputs[2:])
+
                 pruned_embeds, indices = self._prune_embeddings(image_embeds, spec)
             else:
                 return outputs
@@ -319,7 +581,10 @@ class BaseVLM(nn.Module):
 
     @contextmanager
     def _vision_pruning(self, spec: Optional[VisionPruningSpec]):
-        if spec is None or spec.ratio >= 1.0:
+        if spec is None:
+            yield
+            return
+        if spec.ratio >= 1.0 and not spec.enable_prune and spec.pool_factor <= 1:
             yield
             return
         target = self.model

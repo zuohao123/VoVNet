@@ -43,6 +43,13 @@ class PolicyConfig:
     baseline_pruning_ratio: float = 1.0
     baseline_pruning_mode: str = "stride"
     finetune_pruning: bool = False
+    baseline_merge_ratio: float = 1.0
+    baseline_merge_mode: str = "cosine"
+    baseline_merge_weight: str = "norm"
+    baseline_enable_prune: bool = False
+    baseline_prune_ratio: float = 1.0
+    baseline_prune_mode: str = "topk_norm"
+    baseline_pool_factor: int = 1
     gumbel_tau: float = 1.0
     use_straight_through: bool = True
     eval_sample: bool = False
@@ -202,12 +209,17 @@ class Config:
                 "vision_token_pruning_proxy",
                 "pruning_proxy",
                 "vision_pruning",
+                "token_merge_prune_proxy",
+                "token_merge",
+                "multi_granularity_proxy",
+                "resolution_scaling",
                 "none",
                 "null",
             }:
                 raise ValueError(
                     "baseline_name must be always_full, always_coarse, no_vision, "
-                    "uncertainty_threshold, random_policy_matched, vision_token_pruning_proxy, or null"
+                    "uncertainty_threshold, random_policy_matched, vision_token_pruning_proxy, "
+                    "token_merge_prune_proxy, multi_granularity_proxy, resolution_scaling, or null"
                 )
         uncertainty = self.policy.baseline_uncertainty.strip().lower()
         if uncertainty not in {"entropy", "margin"}:
@@ -245,6 +257,27 @@ class Config:
                 mode = self.policy.baseline_pruning_mode.strip().lower()
                 if mode not in {"stride", "topk_norm", "topk"}:
                     raise ValueError("baseline_pruning_mode must be stride or topk_norm")
+            if normalized in {"token_merge_prune_proxy", "token_merge"}:
+                merge_ratio = float(self.policy.baseline_merge_ratio)
+                if merge_ratio <= 0.0 or merge_ratio > 1.0:
+                    raise ValueError("baseline_merge_ratio must be in (0, 1]")
+                merge_mode = self.policy.baseline_merge_mode.strip().lower()
+                if merge_mode not in {"cosine", "l2"}:
+                    raise ValueError("baseline_merge_mode must be cosine or l2")
+                merge_weight = self.policy.baseline_merge_weight.strip().lower()
+                if merge_weight not in {"norm", "mean"}:
+                    raise ValueError("baseline_merge_weight must be norm or mean")
+                if self.policy.baseline_enable_prune:
+                    prune_ratio = float(self.policy.baseline_prune_ratio)
+                    if prune_ratio <= 0.0 or prune_ratio > 1.0:
+                        raise ValueError("baseline_prune_ratio must be in (0, 1]")
+                    prune_mode = self.policy.baseline_prune_mode.strip().lower()
+                    if prune_mode not in {"stride", "topk_norm", "topk"}:
+                        raise ValueError("baseline_prune_mode must be stride or topk_norm")
+            if normalized in {"multi_granularity_proxy"}:
+                pool_factor = int(self.policy.baseline_pool_factor)
+                if pool_factor < 1:
+                    raise ValueError("baseline_pool_factor must be >= 1")
         if self.policy.gain_loss_type not in (
             "mse",
             "huber",
@@ -381,6 +414,25 @@ def _coerce_types(cfg: Config) -> None:
     )
     if isinstance(cfg.policy.baseline_pruning_mode, str):
         cfg.policy.baseline_pruning_mode = cfg.policy.baseline_pruning_mode.strip().lower()
+    cfg.policy.baseline_merge_ratio = _to_float(
+        cfg.policy.baseline_merge_ratio, "policy.baseline_merge_ratio"
+    )
+    if isinstance(cfg.policy.baseline_merge_mode, str):
+        cfg.policy.baseline_merge_mode = cfg.policy.baseline_merge_mode.strip().lower()
+    if isinstance(cfg.policy.baseline_merge_weight, str):
+        cfg.policy.baseline_merge_weight = cfg.policy.baseline_merge_weight.strip().lower()
+    if isinstance(cfg.policy.baseline_enable_prune, str):
+        cfg.policy.baseline_enable_prune = (
+            cfg.policy.baseline_enable_prune.strip().lower() in {"1", "true", "yes"}
+        )
+    cfg.policy.baseline_prune_ratio = _to_float(
+        cfg.policy.baseline_prune_ratio, "policy.baseline_prune_ratio"
+    )
+    if isinstance(cfg.policy.baseline_prune_mode, str):
+        cfg.policy.baseline_prune_mode = cfg.policy.baseline_prune_mode.strip().lower()
+    cfg.policy.baseline_pool_factor = _to_int(
+        cfg.policy.baseline_pool_factor, "policy.baseline_pool_factor"
+    )
 
     cfg.vision_budget.coarse_long_side = _to_int(
         cfg.vision_budget.coarse_long_side, "vision_budget.coarse_long_side"

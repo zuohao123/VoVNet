@@ -25,12 +25,17 @@ _BASELINE_ALIASES = {
     "vision_token_pruning_proxy": "vision_token_pruning_proxy",
     "pruning_proxy": "vision_token_pruning_proxy",
     "vision_pruning": "vision_token_pruning_proxy",
+    "resolution_scaling": "resolution_scaling",
+    "token_merge_prune_proxy": "token_merge_prune_proxy",
+    "token_merge": "token_merge_prune_proxy",
+    "multi_granularity_proxy": "multi_granularity_proxy",
 }
 
 _BASELINE_LABELS = {
     "always_full": "FULL",
     "always_coarse": "COARSE",
     "no_vision": "NO",
+    "resolution_scaling": "RESOLUTION",
 }
 
 
@@ -65,4 +70,10 @@ def resolve_baseline_actions(
         raise ValueError("vision_token_pruning_proxy requires vision token pruning; eval-only")
     if normalized == "random_policy_matched":
         raise ValueError("random_policy_matched requires configured ratios; eval-only")
+    if normalized == "resolution_scaling":
+        return always_full(batch_size, device), _BASELINE_LABELS[normalized], False
+    if normalized == "token_merge_prune_proxy":
+        raise ValueError("token_merge_prune_proxy requires token merging; eval-only")
+    if normalized == "multi_granularity_proxy":
+        raise ValueError("multi_granularity_proxy requires pooling; eval-only")
     raise ValueError(f"Unknown baseline_name: {name}")

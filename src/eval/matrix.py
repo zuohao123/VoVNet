@@ -280,6 +280,224 @@ def _forward_with_vision_token_pruning_proxy(
     }
 
 
+def _forward_with_token_merge_prune_proxy(
+    model: VoVNet,
+    batch: Dict[str, Any],
+    merge_ratio: float,
+    merge_mode: str,
+    merge_weight: str,
+    enable_prune: bool,
+    prune_ratio: float,
+    prune_mode: str,
+) -> Dict[str, Any]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    if images is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "MERGE_PROXY_TEXT_ONLY"
+        return outputs
+
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+    )
+    token_count_coarse, token_count_full, _, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    if full_inputs is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "MERGE_PROXY_TEXT_ONLY"
+        return outputs
+
+    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+    merge_counts = full_model.compute_pruned_counts(token_count_full, merge_ratio)
+    final_counts = merge_counts
+    if enable_prune:
+        final_counts = full_model.compute_pruned_counts(merge_counts, prune_ratio)
+
+    merge_inputs = VisionInputs(
+        pixel_values=None,
+        token_counts=final_counts,
+        image_grid_thw=None,
+    )
+    raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=None,
+        full_inputs=merge_inputs,
+    )
+    full_inputs.input_ids = merge_inputs.input_ids
+    full_inputs.attention_mask = merge_inputs.attention_mask
+    full_inputs.labels = merge_inputs.labels
+    full_inputs.token_counts = final_counts
+
+    merge_spec = VisionPruningSpec(
+        ratio=float(merge_ratio),
+        mode=f"merge_{merge_mode}",
+        min_tokens=1,
+        keep_counts=merge_counts,
+        enable_prune=bool(enable_prune),
+        prune_ratio=float(prune_ratio),
+        prune_mode=prune_mode,
+        merge_weight=merge_weight,
+    )
+    logits, _ = raw_model._forward_mode(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        images=images,
+        text_outputs=text_outputs,
+        mode="full",
+        vision_inputs=full_inputs,
+        vision_pruning=merge_spec,
+    )
+    actions = torch.full(
+        (batch["input_ids"].size(0),),
+        Action.FULL_VISION,
+        device=batch["input_ids"].device,
+        dtype=torch.long,
+    )
+    action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, token_count_coarse, final_counts.float()
+    )
+    return {
+        "logits": logits,
+        "actions": actions,
+        "expected_cost": expected_cost,
+        "vision_tokens": final_counts.float(),
+        "remaining_vision_tokens": final_counts.float(),
+        "action_label": "MERGE_PROXY_FULL",
+        "labels": full_inputs.labels,
+        "merge_ratio": float(merge_ratio),
+        "prune_ratio": float(prune_ratio) if enable_prune else 1.0,
+        "merge_mode": merge_mode,
+        "merge_weight": merge_weight,
+        "enable_prune": bool(enable_prune),
+        "prune_mode": prune_mode,
+    }
+
+
+def _compute_pooled_counts(
+    grid_thw: Optional[torch.Tensor],
+    token_counts: torch.Tensor,
+    pool_factor: int,
+) -> torch.Tensor:
+    if pool_factor <= 1:
+        return token_counts.to(dtype=torch.long).clamp(min=1)
+    if grid_thw is None:
+        ratio = 1.0 / float(pool_factor * pool_factor)
+        return BaseVLM.compute_pruned_counts(token_counts, ratio)
+    grid = grid_thw.to(dtype=torch.long)
+    if grid.ndim == 1:
+        grid = grid.unsqueeze(0)
+    frames = grid[:, 0]
+    heights = grid[:, 1]
+    widths = grid[:, 2]
+    pooled_h = (heights + pool_factor - 1) // pool_factor
+    pooled_w = (widths + pool_factor - 1) // pool_factor
+    counts = (frames * pooled_h * pooled_w).clamp(min=1)
+    return counts.to(device=token_counts.device)
+
+
+def _forward_with_multi_granularity_proxy(
+    model: VoVNet,
+    batch: Dict[str, Any],
+    pool_factor: int,
+) -> Dict[str, Any]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    if images is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "GRANULARITY_TEXT_ONLY"
+        return outputs
+
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+    )
+    token_count_coarse, token_count_full, _, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    if full_inputs is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
+        outputs["action_label"] = "GRANULARITY_TEXT_ONLY"
+        return outputs
+
+    pool_factor = max(1, int(pool_factor))
+    merged_grid = full_inputs.image_grid_thw
+    if merged_grid is not None:
+        full_model = (
+            raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+        )
+        merged_grid = raw_model._apply_merge_to_grid(merged_grid, model=full_model)
+    pooled_counts = _compute_pooled_counts(
+        merged_grid, token_count_full, pool_factor
+    ).to(dtype=torch.long)
+
+    pool_inputs = VisionInputs(
+        pixel_values=None,
+        token_counts=pooled_counts,
+        image_grid_thw=None,
+    )
+    raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=None,
+        full_inputs=pool_inputs,
+    )
+    full_inputs.input_ids = pool_inputs.input_ids
+    full_inputs.attention_mask = pool_inputs.attention_mask
+    full_inputs.labels = pool_inputs.labels
+    full_inputs.token_counts = pooled_counts
+
+    ratio = 1.0 / float(pool_factor * pool_factor) if pool_factor > 1 else 1.0
+    pool_spec = VisionPruningSpec(
+        ratio=ratio,
+        mode="pool",
+        min_tokens=1,
+        keep_counts=pooled_counts,
+        pool_factor=pool_factor,
+        image_grid_thw=merged_grid,
+    )
+    logits, _ = raw_model._forward_mode(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        images=images,
+        text_outputs=text_outputs,
+        mode="full",
+        vision_inputs=full_inputs,
+        vision_pruning=pool_spec,
+    )
+    actions = torch.full(
+        (batch["input_ids"].size(0),),
+        Action.FULL_VISION,
+        device=batch["input_ids"].device,
+        dtype=torch.long,
+    )
+    action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, token_count_coarse, pooled_counts.float()
+    )
+    return {
+        "logits": logits,
+        "actions": actions,
+        "expected_cost": expected_cost,
+        "vision_tokens": pooled_counts.float(),
+        "remaining_vision_tokens": pooled_counts.float(),
+        "action_label": f"GRANULARITY_{pool_factor}",
+        "labels": full_inputs.labels,
+        "pool_factor": pool_factor,
+    }
+
+
 def _forward_with_random_policy_matched(
     model: VoVNet,
     batch: Dict[str, Any],
@@ -398,6 +616,13 @@ def evaluate_dataset(
     baseline_bucket_thresholds: Optional[List[float]],
     baseline_pruning_ratio: float,
     baseline_pruning_mode: str,
+    baseline_merge_ratio: float,
+    baseline_merge_mode: str,
+    baseline_merge_weight: str,
+    baseline_enable_prune: bool,
+    baseline_prune_ratio: float,
+    baseline_prune_mode: str,
+    baseline_pool_factor: int,
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
     raw_model.eval()
@@ -415,8 +640,13 @@ def evaluate_dataset(
     baseline_uncertainty = (baseline_uncertainty or "entropy").strip().lower()
     baseline_vision = (baseline_vision or "full").strip().lower()
     baseline_pruning_mode = (baseline_pruning_mode or "stride").strip().lower()
+    baseline_merge_mode = (baseline_merge_mode or "cosine").strip().lower()
+    baseline_merge_weight = (baseline_merge_weight or "norm").strip().lower()
+    baseline_prune_mode = (baseline_prune_mode or "topk_norm").strip().lower()
     if baseline_pruning_mode == "topk":
         baseline_pruning_mode = "topk_norm"
+    if baseline_prune_mode == "topk":
+        baseline_prune_mode = "topk_norm"
     action_label: Optional[str] = None
     bucket_thresholds: Optional[tuple[float, float]] = None
     generator: Optional[torch.Generator] = None
@@ -455,6 +685,25 @@ def evaluate_dataset(
                     batch,
                     pruning_ratio=baseline_pruning_ratio,
                     pruning_mode=baseline_pruning_mode,
+                )
+                action_label = outputs.get("action_label")
+            elif baseline_name == "token_merge_prune_proxy":
+                outputs = _forward_with_token_merge_prune_proxy(
+                    raw_model,
+                    batch,
+                    merge_ratio=baseline_merge_ratio,
+                    merge_mode=baseline_merge_mode,
+                    merge_weight=baseline_merge_weight,
+                    enable_prune=baseline_enable_prune,
+                    prune_ratio=baseline_prune_ratio,
+                    prune_mode=baseline_prune_mode,
+                )
+                action_label = outputs.get("action_label")
+            elif baseline_name == "multi_granularity_proxy":
+                outputs = _forward_with_multi_granularity_proxy(
+                    raw_model,
+                    batch,
+                    pool_factor=baseline_pool_factor,
                 )
                 action_label = outputs.get("action_label")
             elif baseline_name == "random_policy_matched":
@@ -534,6 +783,15 @@ def evaluate_dataset(
     if baseline_name == "vision_token_pruning_proxy":
         results["pruning_ratio"] = baseline_pruning_ratio
         results["pruning_mode"] = baseline_pruning_mode
+    if baseline_name == "token_merge_prune_proxy":
+        results["merge_ratio"] = baseline_merge_ratio
+        results["merge_mode"] = baseline_merge_mode
+        results["merge_weight"] = baseline_merge_weight
+        results["enable_prune"] = baseline_enable_prune
+        results["prune_ratio"] = baseline_prune_ratio
+        results["prune_mode"] = baseline_prune_mode
+    if baseline_name == "multi_granularity_proxy":
+        results["pool_factor"] = baseline_pool_factor
     if baseline_name == "random_policy_matched":
         reference = _evaluate_reference_policy(
             raw_model, loader, metric_fn, cost_weight
@@ -578,6 +836,15 @@ def rows_from_results(
                 "threshold": item.get("threshold"),
                 "pruning_ratio": item.get("pruning_ratio"),
                 "remaining_vision_tokens": remaining_tokens,
+                "merge_ratio": item.get("merge_ratio"),
+                "merge_mode": item.get("merge_mode"),
+                "merge_weight": item.get("merge_weight"),
+                "enable_prune": item.get("enable_prune"),
+                "prune_ratio": item.get("prune_ratio"),
+                "prune_mode": item.get("prune_mode"),
+                "pool_factor": item.get("pool_factor"),
+                "resolution_long_side": item.get("resolution_long_side"),
+                "resolution_max_pixels": item.get("resolution_max_pixels"),
                 "uncertainty_metric": item.get("uncertainty_metric"),
                 "vision_mode": item.get("vision_mode"),
                 "accuracy": item.get("accuracy"),

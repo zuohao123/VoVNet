@@ -90,7 +90,13 @@ class Trainer:
         )
         if self.baseline_name:
             logger.info("Baseline mode enabled: %s", self.baseline_name)
-        if self.baseline_name in {"uncertainty_threshold", "random_policy_matched"}:
+        if self.baseline_name in {
+            "uncertainty_threshold",
+            "random_policy_matched",
+            "token_merge_prune_proxy",
+            "resolution_scaling",
+            "multi_granularity_proxy",
+        }:
             raise RuntimeError(f"{self.baseline_name} baseline is eval-only; skip training")
         if self.baseline_name == "vision_token_pruning_proxy" and not self.finetune_pruning:
             raise RuntimeError(

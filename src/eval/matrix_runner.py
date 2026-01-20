@@ -80,6 +80,13 @@ def _evaluate_single_process(
                     baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
                     baseline_pruning_ratio=cfg.policy.baseline_pruning_ratio,
                     baseline_pruning_mode=cfg.policy.baseline_pruning_mode,
+                    baseline_merge_ratio=cfg.policy.baseline_merge_ratio,
+                    baseline_merge_mode=cfg.policy.baseline_merge_mode,
+                    baseline_merge_weight=cfg.policy.baseline_merge_weight,
+                    baseline_enable_prune=cfg.policy.baseline_enable_prune,
+                    baseline_prune_ratio=cfg.policy.baseline_prune_ratio,
+                    baseline_prune_mode=cfg.policy.baseline_prune_mode,
+                    baseline_pool_factor=cfg.policy.baseline_pool_factor,
                 )
                 metrics["lambda_cost"] = value
                 results.append(metrics)
@@ -100,6 +107,13 @@ def _evaluate_single_process(
                 baseline_bucket_thresholds=cfg.policy.baseline_bucket_thresholds,
                 baseline_pruning_ratio=cfg.policy.baseline_pruning_ratio,
                 baseline_pruning_mode=cfg.policy.baseline_pruning_mode,
+                baseline_merge_ratio=cfg.policy.baseline_merge_ratio,
+                baseline_merge_mode=cfg.policy.baseline_merge_mode,
+                baseline_merge_weight=cfg.policy.baseline_merge_weight,
+                baseline_enable_prune=cfg.policy.baseline_enable_prune,
+                baseline_prune_ratio=cfg.policy.baseline_prune_ratio,
+                baseline_prune_mode=cfg.policy.baseline_prune_mode,
+                baseline_pool_factor=cfg.policy.baseline_pool_factor,
             )
             metrics["lambda_cost"] = 0.0
             results = [metrics]

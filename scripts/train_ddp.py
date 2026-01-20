@@ -495,7 +495,13 @@ def main() -> None:
     stages = build_stage_schedule(cfg)
     for stage in stages:
         stage_baseline = normalize_baseline_name(stage["baseline_name"])
-        if stage_baseline in {"uncertainty_threshold", "random_policy_matched"}:
+        if stage_baseline in {
+            "uncertainty_threshold",
+            "random_policy_matched",
+            "token_merge_prune_proxy",
+            "resolution_scaling",
+            "multi_granularity_proxy",
+        }:
             raise RuntimeError(f"{stage_baseline} baseline is eval-only; skip training")
         if stage_baseline == "vision_token_pruning_proxy" and not cfg.policy.finetune_pruning:
             raise RuntimeError(

@@ -24,6 +24,13 @@ policy:
   baseline_pruning_ratio: 1.0
   baseline_pruning_mode: "stride"
   finetune_pruning: false
+  baseline_merge_ratio: 1.0
+  baseline_merge_mode: "cosine"
+  baseline_merge_weight: "norm"
+  baseline_enable_prune: false
+  baseline_prune_ratio: 1.0
+  baseline_prune_mode: "topk_norm"
+  baseline_pool_factor: 1
   gumbel_tau: 1.0
   use_straight_through: true
   eval_sample: false
