@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 
 from src.config.config import Config
 from src.data.collate import VLMDataCollator
-from src.eval.matrix import build_model, evaluate_dataset, rows_from_results
+from src.eval.matrix import build_model, evaluate_dataset, load_eval_checkpoint, rows_from_results
 from src.eval.matrix_spec import load_dataset_specs, build_dataset, get_metric_fn
 from src.utils.io import write_csv, write_json
 from src.utils.logging import setup_logging
@@ -101,8 +101,7 @@ def main() -> None:
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
     model = accelerator.prepare(model)
-    if args.checkpoint:
-        accelerator.load_state(args.checkpoint)
+    load_eval_checkpoint(model, args.checkpoint, accelerator)
 
     output_dir = Path(args.output_dir)
     specs = load_dataset_specs(args.dataset_config, cfg)

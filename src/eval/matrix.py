@@ -61,6 +61,40 @@ def build_model(cfg: Config) -> VoVNet:
     )
 
 
+def load_eval_checkpoint(
+    model: VoVNet,
+    checkpoint: Optional[str],
+    accelerator: Optional[object] = None,
+) -> None:
+    """Load a checkpoint for evaluation.
+
+    Supports Accelerate state directories or DDP .pt checkpoints.
+    """
+    if not checkpoint:
+        return
+    path = Path(checkpoint)
+    if path.is_dir():
+        if accelerator is None:
+            raise ValueError("Accelerator required to load a state directory")
+        accelerator.load_state(checkpoint)
+        return
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+
+    ckpt = torch.load(path, map_location="cpu")
+    state = ckpt.get("model") if isinstance(ckpt, dict) else None
+    if state is None and isinstance(ckpt, dict) and "state_dict" in ckpt:
+        state = ckpt["state_dict"]
+    if state is None:
+        state = ckpt
+
+    if accelerator is not None and hasattr(accelerator, "unwrap_model"):
+        raw_model = accelerator.unwrap_model(model)
+    else:
+        raw_model = getattr(model, "module", model)
+    raw_model.load_state_dict(state, strict=False)
+
+
 def _decode_from_logits(
     logits: torch.Tensor, labels: torch.Tensor, tokenizer: Any
 ) -> List[str]:

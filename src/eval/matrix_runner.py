@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.config.config import Config
-from src.eval.matrix import build_model, evaluate_dataset, rows_from_results
+from src.eval.matrix import build_model, evaluate_dataset, load_eval_checkpoint, rows_from_results
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, get_metric_fn
 from src.data.collate import VLMDataCollator
 from src.utils.io import write_csv, write_json
@@ -29,8 +29,7 @@ def _evaluate_single_process(
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
     model = accelerator.prepare(model)
-    if checkpoint:
-        accelerator.load_state(checkpoint)
+    load_eval_checkpoint(model, checkpoint, accelerator)
 
     all_results: Dict[str, Any] = {}
     all_rows: List[Dict[str, Any]] = []

@@ -9,7 +9,7 @@ import torch
 
 from src.config.config import Config
 from src.data.collate import VLMDataCollator
-from src.eval.matrix import build_model
+from src.eval.matrix import build_model, load_eval_checkpoint
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, load_dataset_specs
 from src.eval.metrics import normalize_text
 from src.models.vovnet import Action
@@ -243,8 +243,7 @@ def main() -> None:
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
     model = accelerator.prepare(model)
-    if args.checkpoint:
-        accelerator.load_state(args.checkpoint)
+    load_eval_checkpoint(model, args.checkpoint, accelerator)
 
     results = {"datasets": {}}
     for spec in specs:

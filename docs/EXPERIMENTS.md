@@ -38,8 +38,9 @@ All experiments **must use the same evaluation pipeline** and **unified settings
 - **TODO**: add `--output_prefix results` (default) to `scripts/pareto_threshold.py`, `scripts/pareto_pruning.py`, and `scripts/oracle_action.py` so they also emit `results.csv` + `summary.json`.
 
 **Checkpoint loading**
-- `scripts/eval.py --checkpoint` uses Accelerate `load_state()` (expects an Accelerate state dir).  
-- **TODO**: add `eval.ddp_checkpoint_path` (default `null`) to load DDP `checkpoint-*.pt` saved by `scripts/train_ddp.py`.
+- `scripts/eval.py --checkpoint` supports:
+  - Accelerate state dir, or
+  - DDP `.pt` checkpoints saved by `scripts/train_ddp.py` (keys: `model`, `optimizer`, `scheduler`).
 
 **Cache reuse**
 - `use_cache` is controlled internally; there is no config switch yet.  

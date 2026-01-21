@@ -38,8 +38,9 @@
 - **TODO**：为 `scripts/pareto_threshold.py`、`scripts/pareto_pruning.py`、`scripts/oracle_action.py` 增加 `results.csv` + `summary.json`
 
 **Checkpoint 加载**
-- `scripts/eval.py --checkpoint` 使用 Accelerate 的 `load_state()`（要求 Accelerate state 目录）
-- **TODO**：增加 `eval.ddp_checkpoint_path`（默认 null）支持加载 `scripts/train_ddp.py` 生成的 `checkpoint-*.pt`
+- `scripts/eval.py --checkpoint` 支持：
+  - Accelerate state 目录，或
+  - `scripts/train_ddp.py` 生成的 DDP `.pt` checkpoint（含 `model/optimizer/scheduler`）。
 
 **Cache 复用**
 - `use_cache` 目前内部控制，暂无开关  
