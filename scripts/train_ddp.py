@@ -606,7 +606,7 @@ def main() -> None:
         ckpt_path = Path(args.resume)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-        checkpoint = torch.load(ckpt_path, map_location=device)
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
         raw_model = model.module if isinstance(model, DDP) else model
         raw_model.load_state_dict(checkpoint.get("model", {}), strict=False)
         if not args.resume_model_only:
