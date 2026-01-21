@@ -190,3 +190,13 @@ nohup torchrun --nproc_per_node 8 --master_port 29501 \
 - 日志中出现 `stage=stage2_policy`。
 - `action_ratio` 不再固定 `[1.0, 0.0, 0.0]`。
 - `avg_cost` > 0 且稳定。
+
+### 只跑二阶段（从 stage1 checkpoint 继续）
+当 stage1 已训练完成且需要节约时间时，可用 stage2-only 配置并加载已有 checkpoint：
+```bash
+mkdir -p logs
+nohup torchrun --nproc_per_node 8 --master_port 29501 \
+  scripts/train_ddp.py --config configs/base.yaml --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --resume outputs/train_mmbench_llava_textvqa_vovnet/checkpoint-14000.pt --resume_model_only \
+  > logs/train_mmbench_llava_textvqa_vovnet_stage2.out 2>&1 &
+```

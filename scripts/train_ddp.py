@@ -44,6 +44,12 @@ logger = setup_logging(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train VoVNet with DDP")
     parser.add_argument("--config", action="append", required=True)
+    parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument(
+        "--resume_model_only",
+        action="store_true",
+        help="Only load model weights from checkpoint (ignore optimizer/scheduler).",
+    )
     return parser.parse_args()
 
 
@@ -595,6 +601,30 @@ def main() -> None:
         num_training_steps=num_training_steps,
     )
 
+    resume_step = 0
+    if args.resume:
+        ckpt_path = Path(args.resume)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        raw_model = model.module if isinstance(model, DDP) else model
+        raw_model.load_state_dict(checkpoint.get("model", {}), strict=False)
+        if not args.resume_model_only:
+            optimizer_state = checkpoint.get("optimizer")
+            scheduler_state = checkpoint.get("scheduler")
+            if optimizer_state is not None:
+                optimizer.load_state_dict(optimizer_state)
+            if scheduler_state is not None and scheduler is not None:
+                scheduler.load_state_dict(scheduler_state)
+            resume_step = int(checkpoint.get("global_step", 0))
+        if rank == 0:
+            logger.info(
+                "Loaded checkpoint %s (model_only=%s, resume_step=%s)",
+                ckpt_path,
+                args.resume_model_only,
+                resume_step,
+            )
+
     if rank == 0:
         dataset_meta: dict[str, Any] = {}
         dataset_meta["train"] = collect_dataset_metadata(
@@ -649,7 +679,7 @@ def main() -> None:
         )
         logger.info("Stage schedule: %s", stages)
 
-    global_step = 0
+    global_step = resume_step if resume_step > 0 else 0
     train_start = time.time()
     window_start = train_start
     window_samples = 0

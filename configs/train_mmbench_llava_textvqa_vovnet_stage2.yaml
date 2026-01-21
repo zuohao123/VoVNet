@@ -1,4 +1,4 @@
-# Formal VoVNet training with gain supervision and two-stage schedule.
+# Stage2-only training starting from a stage1 checkpoint.
 data:
   train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
@@ -9,11 +9,9 @@ model:
   use_thinking_for_full: false
 
 training:
-  output_dir: "outputs/train_mmbench_llava_textvqa_vovnet"
-  epochs: 2
-  stage1_epochs: 1
-  stage1_baseline_name: "always_full"
-  stage1_lambda_cost: 0.0
+  output_dir: "outputs/train_mmbench_llava_textvqa_vovnet_stage2"
+  epochs: 1
+  stage1_epochs: 0
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
