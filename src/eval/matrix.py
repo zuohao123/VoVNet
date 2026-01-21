@@ -121,7 +121,7 @@ def _forward_with_cost(
             batch_size=batch["input_ids"].size(0),
         )
     )
-    text_input_ids, text_attention_mask, _ = raw_model._prepare_text_and_vision_inputs(
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
         input_ids=batch["input_ids"],
         attention_mask=batch["attention_mask"],
         labels=batch.get("labels"),
