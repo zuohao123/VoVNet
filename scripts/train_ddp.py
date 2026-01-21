@@ -670,6 +670,19 @@ def main() -> None:
         stage_epochs = int(stage["epochs"])
         stage_baseline = normalize_baseline_name(stage["baseline_name"])
         stage_lambda_cost = float(stage["lambda_cost"])
+        if (
+            cfg.training.gradient_checkpointing
+            and stage_name == "stage2_policy"
+            and stage_baseline is None
+        ):
+            raw_model = model.module if isinstance(model, DDP) else model
+            if raw_model.full_vlm is None:
+                if rank == 0:
+                    logger.warning(
+                        "Disabling gradient checkpointing for stage2_policy to avoid "
+                        "DDP reentrant backward errors when reusing the base VLM."
+                    )
+                raw_model.base_vlm.disable_gradient_checkpointing()
         if rank == 0:
             logger.info(
                 "Starting %s: epochs=%s baseline=%s lambda_cost=%.4f",

@@ -140,6 +140,16 @@ class BaseVLM(nn.Module):
             config.use_cache = False
         self._ensure_input_requires_grad()
 
+    def disable_gradient_checkpointing(self) -> None:
+        """Disable gradient checkpointing if available."""
+        if hasattr(self.model, "gradient_checkpointing_disable"):
+            self.model.gradient_checkpointing_disable()
+        elif hasattr(self.model, "gradient_checkpointing"):
+            setattr(self.model, "gradient_checkpointing", False)
+        config = getattr(self.model, "config", None)
+        if config is not None and hasattr(config, "use_cache"):
+            config.use_cache = False
+
     def _ensure_input_requires_grad(self) -> None:
         """Ensure checkpointed layers receive grad-enabled inputs."""
         if hasattr(self.model, "enable_input_require_grads"):
