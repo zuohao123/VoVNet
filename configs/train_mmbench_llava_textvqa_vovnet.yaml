@@ -1,0 +1,34 @@
+# Formal VoVNet training with gain supervision and two-stage schedule.
+data:
+  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
+  prompt_template: "Question: {question}\nAnswer:"
+
+model:
+  torch_dtype: "float16"
+  use_thinking_for_full: false
+
+training:
+  output_dir: "outputs/train_mmbench_llava_textvqa_vovnet"
+  epochs: 2
+  stage1_epochs: 1
+  stage1_baseline_name: "always_full"
+  stage1_lambda_cost: 0.0
+  per_device_batch_size: 1
+  gradient_accumulation: 4
+  log_every: 100
+  mixed_precision: "fp16"
+  gradient_checkpointing: true
+  lr: 5e-5
+  warmup_steps: 0
+  max_grad_norm: 1.0
+  save_every: 500
+
+policy:
+  baseline_name: null
+  policy_mode: "gain"
+  gain_supervision: true
+  gain_loss_weight: 1.0
+  lambda_cost: 0.01
+  gumbel_tau: 1.0
+  use_straight_through: true

@@ -167,3 +167,26 @@ return {logits, action_logits, action_probs, actions,
 ---
 
 如需我补充 **更具体的 tensor shape、模型前向/生成接口兼容性** 或 **将流程与损失函数/日志指标对齐的图示**，告诉我即可。
+
+---
+
+## 9. 正式训练配置与命令（可回溯）
+
+### 配置文件
+新增配置：`configs/train_mmbench_llava_textvqa_vovnet.yaml`
+- 启用 gain 监督（`policy_mode=gain` + `gain_supervision=true`），避免 stage2 塌缩为 NO。
+- stage1 仍为 `always_full`，stage2 走策略。
+- eval 使用 `mmbench_dev`，避免 `val_loss=nan`。
+
+### 后台训练命令（8卡）
+```bash
+mkdir -p logs
+nohup torchrun --nproc_per_node 8 --master_port 29501 \
+  scripts/train_ddp.py --config configs/base.yaml --config configs/train_mmbench_llava_textvqa_vovnet.yaml \
+  > logs/train_mmbench_llava_textvqa_vovnet.out 2>&1 &
+```
+
+### 校验要点
+- 日志中出现 `stage=stage2_policy`。
+- `action_ratio` 不再固定 `[1.0, 0.0, 0.0]`。
+- `avg_cost` > 0 且稳定。
