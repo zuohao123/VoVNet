@@ -114,15 +114,22 @@ def _forward_with_cost(
     cost_weight: Optional[float],
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
-    text_outputs, action_logits, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-    )
     token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
         raw_model._prepare_token_counts(
             images=batch.get("images"),
             device=batch["input_ids"].device,
             batch_size=batch["input_ids"].size(0),
         )
+    )
+    text_input_ids, text_attention_mask, _ = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
+    text_outputs, action_logits, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
     )
     if cost_weight is not None:
         zeros = torch.zeros_like(token_count_coarse)
@@ -137,8 +144,8 @@ def _forward_with_cost(
         actions, _, _, _ = raw_model._apply_fallback(actions, uncertainty, margin)
 
     logits, vision_tokens = raw_model._forward_hard_actions(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=batch.get("images"),
         text_outputs=text_outputs,
         actions=actions,
