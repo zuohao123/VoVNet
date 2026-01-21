@@ -143,12 +143,13 @@ def _forward_with_cost(
     if not raw_model.training and batch.get("images") is not None:
         actions, _, _, _ = raw_model._apply_fallback(actions, uncertainty, margin)
 
-    logits, vision_tokens = raw_model._forward_hard_actions(
+    logits, vision_tokens, labels = raw_model._forward_hard_actions(
         input_ids=text_input_ids,
         attention_mask=text_attention_mask,
         images=batch.get("images"),
         text_outputs=text_outputs,
         actions=actions,
+        text_labels=text_labels,
         coarse_inputs=coarse_inputs,
         full_inputs=full_inputs,
     )
@@ -161,6 +162,7 @@ def _forward_with_cost(
         "actions": actions,
         "expected_cost": expected_cost,
         "vision_tokens": vision_tokens,
+        "labels": labels,
     }
 
 
@@ -793,6 +795,38 @@ def evaluate_dataset(
                     ece, _ = expected_calibration_error(probs, flat_labels)
                     total_ece += float(ece.item()) * int(mask.sum().item())
                     total_ece_count += int(mask.sum().item())
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        device = next(raw_model.parameters()).device
+        total_acc_t = torch.tensor(total_acc, device=device)
+        total_cost_t = torch.tensor(total_cost, device=device)
+        total_count_t = torch.tensor(total_count, device=device)
+        total_vision_tokens_t = torch.tensor(total_vision_tokens, device=device)
+        total_remaining_tokens_t = torch.tensor(total_remaining_tokens, device=device)
+        total_ece_t = torch.tensor(total_ece, device=device)
+        total_ece_count_t = torch.tensor(total_ece_count, device=device)
+        action_counts_t = action_counts.to(device=device, dtype=torch.float)
+
+        for tensor in (
+            total_acc_t,
+            total_cost_t,
+            total_count_t,
+            total_vision_tokens_t,
+            total_remaining_tokens_t,
+            total_ece_t,
+            total_ece_count_t,
+            action_counts_t,
+        ):
+            torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+
+        total_acc = float(total_acc_t.item())
+        total_cost = float(total_cost_t.item())
+        total_count = int(total_count_t.item())
+        total_vision_tokens = float(total_vision_tokens_t.item())
+        total_remaining_tokens = float(total_remaining_tokens_t.item())
+        total_ece = float(total_ece_t.item())
+        total_ece_count = int(total_ece_count_t.item())
+        action_counts = action_counts_t.cpu()
 
     action_rates = (action_counts.float() / max(1, total_count)).tolist()
     summary = profiler.summary() if profile else {}

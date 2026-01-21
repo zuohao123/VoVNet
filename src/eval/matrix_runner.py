@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import torch
+
 from src.config.config import Config
 from src.eval.matrix import build_model, evaluate_dataset, load_eval_checkpoint, rows_from_results
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, get_metric_fn
@@ -120,7 +122,10 @@ def _evaluate_single_process(
         all_results[spec.name] = {"metric": spec.metric, "results": results}
         all_rows.extend(rows_from_results(spec.name, spec.metric, results))
 
-    if write_outputs:
+    is_main = True
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        is_main = torch.distributed.get_rank() == 0
+    if write_outputs and is_main:
         output_dir.mkdir(parents=True, exist_ok=True)
         write_json(output_dir / "eval_matrix.json", {"datasets": all_results})
         write_csv(output_dir / "eval_matrix.csv", all_rows)
@@ -212,14 +217,18 @@ def run_eval_matrix(
         checkpoint=checkpoint,
         write_outputs=True,
     )
-    _write_eval_summary(
-        output_dir=output_dir,
-        cfg=cfg,
-        cfg_paths=cfg_paths,
-        results=results,
-        pareto=pareto,
-        checkpoint=checkpoint,
-    )
+    is_main = True
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        is_main = torch.distributed.get_rank() == 0
+    if is_main:
+        _write_eval_summary(
+            output_dir=output_dir,
+            cfg=cfg,
+            cfg_paths=cfg_paths,
+            results=results,
+            pareto=pareto,
+            checkpoint=checkpoint,
+        )
     return results
 
 
