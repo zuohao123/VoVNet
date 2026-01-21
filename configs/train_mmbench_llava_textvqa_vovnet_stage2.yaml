@@ -30,3 +30,11 @@ policy:
   lambda_cost: 0.01
   gumbel_tau: 1.0
   use_straight_through: true
+
+vision_budget:
+  coarse_long_side: 224
+  full_long_side: 448
+  coarse_max_pixels: 50176
+  full_max_pixels: 200704
+  patch_size: 14
+  token_cap: null
