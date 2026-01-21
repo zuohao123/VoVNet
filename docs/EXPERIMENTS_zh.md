@@ -11,6 +11,8 @@
 **统一评测管线**
 - 使用 `scripts/eval.py`（matrix runner）或调用同一评测核心 `src/eval/matrix.evaluate_dataset` 的脚本。
 - 所有 baseline 必须使用相同 prompt 模板与解码设置（来自配置）。
+- `--dataset_config` 支持内置数据集名（避免临时 YAML）：
+  - `mmbench`、`mmmu`、`textvqa`（可用逗号列表，如 `"mmbench,mmmu,textvqa"`）。
 
 **后台执行**
 - 先创建日志目录：`mkdir -p logs`
@@ -76,15 +78,15 @@ nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
 
 **配置**
 - 使用 `configs/base.yaml` + `configs/train_mmbench_llava_textvqa.yaml`
-- 评测集：`configs/eval.yaml`（MMBench test）
+- 评测集：`--dataset_config mmbench`（MMBench test）
 - baseline：`policy.baseline_name: null`（VoVNet）
 
 **命令**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_vovnet \
   --pareto 0 0.01 0.02 0.05 0.1 \
   > logs/eval_pareto_vovnet.out 2>&1 &
@@ -113,10 +115,10 @@ YAML
 
 **命令（对多个 seed 重复）**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/seed_42.yaml \
   --output_dir outputs/pareto_vovnet_seed42 \
   --pareto 0.02 0.05 0.1 \
@@ -146,10 +148,10 @@ cat > configs/baseline_always_full.yaml <<'YAML'
 policy:
   baseline_name: "always_full"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/baseline_always_full \
   > logs/eval_baseline_always_full.out 2>&1 &
@@ -158,10 +160,10 @@ cat > configs/baseline_always_coarse.yaml <<'YAML'
 policy:
   baseline_name: "always_coarse"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_coarse.yaml \
   --output_dir outputs/baseline_always_coarse \
   > logs/eval_baseline_always_coarse.out 2>&1 &
@@ -170,10 +172,10 @@ cat > configs/baseline_no_vision.yaml <<'YAML'
 policy:
   baseline_name: "no_vision"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_no_vision.yaml \
   --output_dir outputs/baseline_no_vision \
   > logs/eval_baseline_no_vision.out 2>&1 &
@@ -205,10 +207,10 @@ policy:
   baseline_threshold: 0.50
   baseline_vision: "full"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_uncertainty_entropy_full.yaml \
   --output_dir outputs/baseline_uncertainty_t0_50 \
   > logs/eval_baseline_uncertainty_t0_50.out 2>&1 &
@@ -216,10 +218,10 @@ nohup python scripts/eval.py \
 
 **命令（Pareto 扫描）**
 ```bash
-nohup python scripts/pareto_threshold.py \
+nohup python -m scripts.pareto_threshold \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_threshold_entropy_full \
   --thresholds 0.10 0.20 0.30 0.40 0.50 \
   --uncertainty entropy \
@@ -245,7 +247,7 @@ nohup python scripts/pareto_threshold.py \
 
 **命令（从 VoVNet 结果提取 action_ratio）**
 ```bash
-python - <<'PY'
+nohup python - <<'PY' > logs/gen_random_matched_cfg.out 2>&1 &
 import csv
 from pathlib import Path
 
@@ -287,10 +289,10 @@ with open("configs/baseline_random_matched.yaml", "w") as f:
 print("Wrote configs/baseline_random_matched.yaml with ratios", ratio)
 PY
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_random_matched.yaml \
   --output_dir outputs/baseline_random_matched \
   > logs/eval_baseline_random_matched.out 2>&1 &
@@ -325,10 +327,10 @@ policy:
   baseline_pruning_ratio: 0.50
   baseline_pruning_mode: "stride"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_pruning_ratio_050.yaml \
   --output_dir outputs/baseline_pruning_ratio_050 \
   > logs/eval_baseline_pruning_ratio_050.out 2>&1 &
@@ -336,10 +338,10 @@ nohup python scripts/eval.py \
 
 **命令（Pareto 扫描）**
 ```bash
-nohup python scripts/pareto_pruning.py \
+nohup python -m scripts.pareto_pruning \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_pruning_stride \
   --ratios 1.0 0.75 0.50 0.25 \
   --mode stride \
@@ -363,14 +365,14 @@ nohup python scripts/pareto_pruning.py \
 **目的**：验证策略在视觉依赖与 OCR 场景的泛化。
 
 **配置**
-- 使用 `configs/eval_matrix.yaml`（已包含 MMBench、MMMU、TextVQA）
+- 使用 `--dataset_config "mmbench,mmmu,textvqa"`（已包含 MMBench、MMMU、TextVQA）
 
 **命令**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config configs/eval_matrix.yaml \
+  --dataset_config "mmbench,mmmu,textvqa" \
   --output_dir outputs/generalization_vovnet \
   > logs/eval_generalization_vovnet.out 2>&1 &
 ```
@@ -452,10 +454,10 @@ policy:
   fallback_mode: "full"
   fallback_entropy_threshold: 0.50
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/fallback_full.yaml \
   --output_dir outputs/fallback_full \
   > logs/eval_fallback_full.out 2>&1 &
@@ -484,27 +486,27 @@ YAML
 **命令**
 注：以下 profile 命令建议逐条执行。
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --output_dir outputs/profile_vovnet \
   > logs/profile_vovnet.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/profile_always_full \
   > logs/profile_always_full.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_coarse.yaml \
   --output_dir outputs/profile_always_coarse \
@@ -522,7 +524,7 @@ nohup python scripts/eval.py \
 ### G1. 生成 main_table / pareto / action_ratio
 **命令**
 ```bash
-python - <<'PY'
+nohup python - <<'PY' > logs/build_tables.out 2>&1 &
 import csv
 from pathlib import Path
 
@@ -587,10 +589,10 @@ PY
 
 **命令**
 ```bash
-nohup python scripts/oracle_action.py \
+nohup python -m scripts.oracle_action \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/oracle_action \
   --max_samples 200 \
   > logs/oracle_action.out 2>&1 &
@@ -614,10 +616,10 @@ nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
 
 2) VoVNet Pareto（3 个点）：
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_vovnet_mvp \
   --pareto 0 0.05 0.1 \
   > logs/eval_pareto_vovnet_mvp.out 2>&1 &
@@ -626,18 +628,18 @@ nohup python scripts/eval.py \
 3) 固定基线（Always-Full + No-Vision）
 注：需要先执行 B1 生成 baseline 配置文件。
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/baseline_always_full_mvp \
   > logs/eval_baseline_always_full_mvp.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_no_vision.yaml \
   --output_dir outputs/baseline_no_vision_mvp \
   > logs/eval_baseline_no_vision_mvp.out 2>&1 &

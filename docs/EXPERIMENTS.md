@@ -11,6 +11,8 @@ All experiments **must use the same evaluation pipeline** and **unified settings
 **Unified evaluation pipeline**
 - Use `scripts/eval.py` (matrix runner) or wrapper sweep scripts that call the same evaluation core (`src/eval/matrix.evaluate_dataset`).
 - All baselines must use the same prompt template and decoding settings from config.
+- `--dataset_config` supports preset names to avoid temp YAML files:
+  - `mmbench`, `mmmu`, `textvqa` (comma lists allowed, e.g. `"mmbench,mmmu,textvqa"`).
 
 **Background execution**
 - Create log directory once: `mkdir -p logs`
@@ -76,16 +78,16 @@ nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
 
 **Config**
 - Use `configs/base.yaml` + `configs/train_mmbench_llava_textvqa.yaml`.
-- Eval split: `configs/eval.yaml` (MMBench test).
+- Eval split: `--dataset_config mmbench` (MMBench test).
 - Baseline: `policy.baseline_name: null` (VoVNet).
 - Sweep `--pareto` list for lambda_cost.
 
 **Command**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_vovnet \
   --pareto 0 0.01 0.02 0.05 0.1 \
   > logs/eval_pareto_vovnet.out 2>&1 &
@@ -115,10 +117,10 @@ YAML
 
 **Command (repeat for 2-3 seeds)**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/seed_42.yaml \
   --output_dir outputs/pareto_vovnet_seed42 \
   --pareto 0.02 0.05 0.1 \
@@ -149,10 +151,10 @@ cat > configs/baseline_always_full.yaml <<'YAML'
 policy:
   baseline_name: "always_full"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/baseline_always_full \
   > logs/eval_baseline_always_full.out 2>&1 &
@@ -161,10 +163,10 @@ cat > configs/baseline_always_coarse.yaml <<'YAML'
 policy:
   baseline_name: "always_coarse"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_coarse.yaml \
   --output_dir outputs/baseline_always_coarse \
   > logs/eval_baseline_always_coarse.out 2>&1 &
@@ -173,10 +175,10 @@ cat > configs/baseline_no_vision.yaml <<'YAML'
 policy:
   baseline_name: "no_vision"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_no_vision.yaml \
   --output_dir outputs/baseline_no_vision \
   > logs/eval_baseline_no_vision.out 2>&1 &
@@ -208,10 +210,10 @@ policy:
   baseline_threshold: 0.50
   baseline_vision: "full"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_uncertainty_entropy_full.yaml \
   --output_dir outputs/baseline_uncertainty_t0_50 \
   > logs/eval_baseline_uncertainty_t0_50.out 2>&1 &
@@ -219,10 +221,10 @@ nohup python scripts/eval.py \
 
 **Command (Pareto sweep, writes pareto_threshold.csv/json)**
 ```bash
-nohup python scripts/pareto_threshold.py \
+nohup python -m scripts.pareto_threshold \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_threshold_entropy_full \
   --thresholds 0.10 0.20 0.30 0.40 0.50 \
   --uncertainty entropy \
@@ -248,7 +250,7 @@ nohup python scripts/pareto_threshold.py \
 
 **Command (generate ratios from VoVNet results)**
 ```bash
-python - <<'PY'
+nohup python - <<'PY' > logs/gen_random_matched_cfg.out 2>&1 &
 import csv
 from pathlib import Path
 
@@ -290,10 +292,10 @@ with open("configs/baseline_random_matched.yaml", "w") as f:
 print("Wrote configs/baseline_random_matched.yaml with ratios", ratio)
 PY
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_random_matched.yaml \
   --output_dir outputs/baseline_random_matched \
   > logs/eval_baseline_random_matched.out 2>&1 &
@@ -328,10 +330,10 @@ policy:
   baseline_pruning_ratio: 0.50
   baseline_pruning_mode: "stride"
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_pruning_ratio_050.yaml \
   --output_dir outputs/baseline_pruning_ratio_050 \
   > logs/eval_baseline_pruning_ratio_050.out 2>&1 &
@@ -339,10 +341,10 @@ nohup python scripts/eval.py \
 
 **Command (Pareto sweep, writes pareto_pruning.csv/json)**
 ```bash
-nohup python scripts/pareto_pruning.py \
+nohup python -m scripts.pareto_pruning \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_pruning_stride \
   --ratios 1.0 0.75 0.50 0.25 \
   --mode stride \
@@ -366,14 +368,14 @@ nohup python scripts/pareto_pruning.py \
 **Purpose**: show action shifts under strong visual vs OCR-heavy tasks.
 
 **Config**
-- Use `configs/eval_matrix.yaml` (already includes MMBench test, MMMU validation, TextVQA validation).
+- Use `--dataset_config "mmbench,mmmu,textvqa"` (already includes MMBench test, MMMU validation, TextVQA validation).
 
 **Command**
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config configs/eval_matrix.yaml \
+  --dataset_config "mmbench,mmmu,textvqa" \
   --output_dir outputs/generalization_vovnet \
   > logs/eval_generalization_vovnet.out 2>&1 &
 ```
@@ -495,10 +497,10 @@ policy:
   fallback_mode: "full"
   fallback_entropy_threshold: 0.50
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/fallback_full.yaml \
   --output_dir outputs/fallback_full \
   > logs/eval_fallback_full.out 2>&1 &
@@ -539,27 +541,27 @@ cat > configs/profile_eval.yaml <<'YAML'
 eval:
   profile: true
 YAML
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --output_dir outputs/profile_vovnet \
   > logs/profile_vovnet.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/profile_always_full \
   > logs/profile_always_full.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_coarse.yaml \
   --output_dir outputs/profile_always_coarse \
@@ -585,7 +587,7 @@ nohup python scripts/eval.py \
 
 **Command**
 ```bash
-python - <<'PY'
+nohup python - <<'PY' > logs/build_tables.out 2>&1 &
 import csv
 from pathlib import Path
 
@@ -667,10 +669,10 @@ PY
 
 **Command**
 ```bash
-nohup python scripts/oracle_action.py \
+nohup python -m scripts.oracle_action \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/oracle_action \
   --max_samples 200 \
   > logs/oracle_action.out 2>&1 &
@@ -699,10 +701,10 @@ nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
 
 2) VoVNet Pareto (3 lambda points):
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --output_dir outputs/pareto_vovnet_mvp \
   --pareto 0 0.05 0.1 \
   > logs/eval_pareto_vovnet_mvp.out 2>&1 &
@@ -711,18 +713,18 @@ nohup python scripts/eval.py \
 3) Fixed baselines (Always-Full + No-Vision):
 Note: requires `configs/baseline_always_full.yaml` and `configs/baseline_no_vision.yaml` from B1.
 ```bash
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_always_full.yaml \
   --output_dir outputs/baseline_always_full_mvp \
   > logs/eval_baseline_always_full_mvp.out 2>&1 &
 
-nohup python scripts/eval.py \
+nohup python -m scripts.eval \
   --config configs/base.yaml \
   --config configs/train_mmbench_llava_textvqa.yaml \
-  --config configs/eval.yaml \
+  --dataset_config mmbench \
   --config configs/baseline_no_vision.yaml \
   --output_dir outputs/baseline_no_vision_mvp \
   > logs/eval_baseline_no_vision_mvp.out 2>&1 &
