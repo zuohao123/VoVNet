@@ -39,6 +39,47 @@ def get_metric_fn(name: str) -> Callable[[Iterable[str], Iterable[str]], float]:
     raise ValueError(f"Unknown metric: {name}")
 
 
+_PRESET_JSONL = {
+    "mmbench": "data/processed/mmbench/mmbench_test.jsonl",
+    "mmbench_test": "data/processed/mmbench/mmbench_test.jsonl",
+    "mmbench_dev": "data/processed/mmbench/mmbench_dev.jsonl",
+    "mmmu": "data/processed/mmmu/mmmu_validation.jsonl",
+    "mmmu_validation": "data/processed/mmmu/mmmu_validation.jsonl",
+    "textvqa": "data/processed/textvqa/textvqa_validation.jsonl",
+    "textvqa_validation": "data/processed/textvqa/textvqa_validation.jsonl",
+}
+
+
+def _parse_dataset_names(raw: str) -> List[str]:
+    tokens = [item.strip() for item in raw.replace(",", " ").split()]
+    return [token for token in tokens if token]
+
+
+def _load_preset_specs(raw: str, cfg: Config) -> List[EvalDatasetSpec]:
+    specs: List[EvalDatasetSpec] = []
+    for name in _parse_dataset_names(raw):
+        key = name.strip().lower()
+        jsonl = _PRESET_JSONL.get(key)
+        if not jsonl:
+            raise ValueError(
+                f"Unknown dataset preset: {name}. "
+                f"Available: {', '.join(sorted(_PRESET_JSONL))}"
+            )
+        specs.append(
+            EvalDatasetSpec(
+                name=key,
+                source="jsonl",
+                jsonl=jsonl,
+                prompt_template=cfg.data.prompt_template,
+                text_field=cfg.data.text_field,
+                answer_field=cfg.data.answer_field,
+                image_field=cfg.data.image_field,
+                max_samples=cfg.data.max_samples,
+            )
+        )
+    return specs
+
+
 def load_dataset_specs(path: str | None, cfg: Config) -> List[EvalDatasetSpec]:
     if path is None:
         if cfg.data.eval_jsonl:
@@ -70,16 +111,23 @@ def load_dataset_specs(path: str | None, cfg: Config) -> List[EvalDatasetSpec]:
             ]
         raise ValueError("No eval dataset configured")
 
-    data = yaml.safe_load(Path(path).read_text()) or {}
-    defaults = data.get("defaults", {})
-    datasets = data.get("datasets", [])
-    specs: List[EvalDatasetSpec] = []
-    for item in datasets:
-        merged = {**defaults, **(item or {})}
-        specs.append(EvalDatasetSpec(**merged))
-    if not specs:
-        raise ValueError("dataset_config contains no datasets")
-    return specs
+    path_obj = Path(path)
+    if path_obj.exists():
+        data = yaml.safe_load(path_obj.read_text()) or {}
+        defaults = data.get("defaults", {})
+        datasets = data.get("datasets", [])
+        specs: List[EvalDatasetSpec] = []
+        for item in datasets:
+            merged = {**defaults, **(item or {})}
+            specs.append(EvalDatasetSpec(**merged))
+        if not specs:
+            raise ValueError("dataset_config contains no datasets")
+        return specs
+
+    if path_obj.suffix in {".yaml", ".yml"}:
+        raise FileNotFoundError(f"dataset_config not found: {path}")
+
+    return _load_preset_specs(path, cfg)
 
 
 def build_dataset(spec: EvalDatasetSpec) -> torch.utils.data.Dataset:
