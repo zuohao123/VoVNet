@@ -50,6 +50,14 @@ def _decode_from_logits(
     return preds
 
 
+def _move_batch_to_device(batch: dict, device: torch.device) -> dict:
+    for key in ("input_ids", "attention_mask", "labels"):
+        value = batch.get(key)
+        if torch.is_tensor(value) and value.device != device:
+            batch[key] = value.to(device)
+    return batch
+
+
 def _match_preds(preds: Iterable[str], refs: Iterable[str], device: torch.device) -> torch.Tensor:
     values = [
         normalize_text(pred) == normalize_text(ref)
@@ -87,6 +95,9 @@ def _evaluate_oracle(
 
     with torch.no_grad():
         for batch in loader:
+            if batch is None:
+                continue
+            batch = _move_batch_to_device(batch, device)
             input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
             labels = batch.get("labels")
@@ -239,6 +250,7 @@ def main() -> None:
     from torch.utils.data import DataLoader
 
     accelerator = Accelerator(mixed_precision=cfg.training.mixed_precision)
+    use_distributed = accelerator.num_processes > 1
     model = build_model(cfg)
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
@@ -258,7 +270,8 @@ def main() -> None:
             shuffle=False,
             collate_fn=collator,
         )
-        loader = accelerator.prepare(loader)
+        if use_distributed:
+            loader = accelerator.prepare(loader)
         metrics = _evaluate_oracle(model, loader)
         metrics["metric"] = spec.metric
         metrics["max_samples"] = spec.max_samples

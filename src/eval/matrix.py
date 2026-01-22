@@ -108,6 +108,14 @@ def _decode_from_logits(
     return preds
 
 
+def _move_batch_to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+    for key in ("input_ids", "attention_mask", "labels"):
+        value = batch.get(key)
+        if torch.is_tensor(value) and value.device != device:
+            batch[key] = value.to(device)
+    return batch
+
+
 def _forward_with_cost(
     model: VoVNet,
     batch: Dict[str, Any],
@@ -606,9 +614,13 @@ def _compute_bucket_thresholds(
     loader: DataLoader,
 ) -> tuple[float, float]:
     raw_model = getattr(model, "module", model)
+    device = next(raw_model.parameters()).device
     entropies: List[torch.Tensor] = []
     with torch.no_grad():
         for batch in loader:
+            if batch is None:
+                continue
+            batch = _move_batch_to_device(batch, device)
             text_outputs, _, _ = raw_model.text_first(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
             )
@@ -624,12 +636,16 @@ def _evaluate_reference_policy(
     cost_weight: Optional[float],
 ) -> Dict[str, float]:
     raw_model = getattr(model, "module", model)
+    device = next(raw_model.parameters()).device
     total_acc = 0.0
     total_cost = 0.0
     total_count = 0
     tokenizer = raw_model.base_vlm.tokenizer
     with torch.no_grad():
         for batch in loader:
+            if batch is None:
+                continue
+            batch = _move_batch_to_device(batch, device)
             outputs = _forward_with_cost(raw_model, batch, cost_weight)
             labels = outputs.get("labels") if outputs.get("labels") is not None else batch["labels"]
             preds = _decode_from_logits(outputs["logits"], labels, tokenizer)
@@ -669,6 +685,7 @@ def evaluate_dataset(
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
     raw_model.eval()
+    device = next(raw_model.parameters()).device
     total_acc = 0.0
     total_cost = 0.0
     total_vision_tokens = 0.0
@@ -713,6 +730,7 @@ def evaluate_dataset(
         for batch in loader:
             if batch is None:
                 continue
+            batch = _move_batch_to_device(batch, device)
             if profile:
                 profiler.start()
             if baseline_name == "uncertainty_threshold":

@@ -97,6 +97,7 @@ def main() -> None:
     from torch.utils.data import DataLoader
 
     accelerator = Accelerator(mixed_precision=cfg.training.mixed_precision)
+    use_distributed = accelerator.num_processes > 1
     model = build_model(cfg)
     if model.base_vlm.tokenizer is None:
         raise RuntimeError("Tokenizer could not be loaded; check model name")
@@ -132,7 +133,8 @@ def main() -> None:
             shuffle=False,
             collate_fn=collator,
         )
-        loader = accelerator.prepare(loader)
+        if use_distributed:
+            loader = accelerator.prepare(loader)
         metric_fn = get_metric_fn(spec.metric)
         results = []
 
