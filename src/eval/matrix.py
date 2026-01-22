@@ -785,16 +785,17 @@ def evaluate_dataset(
             remaining_tokens = outputs.get("remaining_vision_tokens")
             if remaining_tokens is not None:
                 total_remaining_tokens += remaining_tokens.sum().item()
-            labels = batch.get("labels")
-            if labels is not None:
-                mask = labels.ne(-100)
-                if mask.any():
-                    flat_logits = outputs["logits"][mask]
-                    flat_labels = labels[mask]
-                    probs = torch.softmax(flat_logits, dim=-1)
-                    ece, _ = expected_calibration_error(probs, flat_labels)
-                    total_ece += float(ece.item()) * int(mask.sum().item())
-                    total_ece_count += int(mask.sum().item())
+            labels_for_ece = outputs.get("labels") if outputs.get("labels") is not None else batch.get("labels")
+            if labels_for_ece is not None:
+                if labels_for_ece.shape == outputs["logits"].shape[:-1]:
+                    mask = labels_for_ece.ne(-100)
+                    if mask.any():
+                        flat_logits = outputs["logits"][mask]
+                        flat_labels = labels_for_ece[mask]
+                        probs = torch.softmax(flat_logits, dim=-1)
+                        ece, _ = expected_calibration_error(probs, flat_labels)
+                        total_ece += float(ece.item()) * int(mask.sum().item())
+                        total_ece_count += int(mask.sum().item())
 
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         device = next(raw_model.parameters()).device

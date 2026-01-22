@@ -601,7 +601,12 @@ class VoVNet(nn.Module):
         full_labels: Optional[List[List[int]]] = None
 
         if image_token_id is not None and coarse_inputs is not None:
-            counts = self._vision_token_counts(coarse_inputs, model=self.base_vlm).tolist()
+            counts_tensor = (
+                coarse_inputs.token_counts
+                if coarse_inputs.token_counts is not None
+                else self._vision_token_counts(coarse_inputs, model=self.base_vlm)
+            )
+            counts = counts_tensor.tolist()
             coarse_tokens = []
             coarse_labels = [] if labels is not None else None
             for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
@@ -615,7 +620,12 @@ class VoVNet(nn.Module):
 
         if image_token_id is not None and full_inputs is not None:
             model = self.full_vlm if self.full_vlm is not None else self.base_vlm
-            counts = self._vision_token_counts(full_inputs, model=model).tolist()
+            counts_tensor = (
+                full_inputs.token_counts
+                if full_inputs.token_counts is not None
+                else self._vision_token_counts(full_inputs, model=model)
+            )
+            counts = counts_tensor.tolist()
             full_tokens = []
             full_labels = [] if labels is not None else None
             for idx, (seq, count) in enumerate(zip(text_tokens, counts)):
