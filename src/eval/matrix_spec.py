@@ -11,7 +11,7 @@ import yaml
 from src.config.config import Config
 from src.data.adapters.hf_dataset import HFDatasetAdapter
 from src.data.adapters.jsonl import JsonlVQADataset
-from src.eval.metrics import exact_match_score
+from src.eval.metrics import exact_match_score, multi_choice_accuracy, vqa_accuracy_score
 
 
 @dataclass
@@ -32,10 +32,14 @@ class EvalDatasetSpec:
     max_samples: Optional[int] = None
 
 
-def get_metric_fn(name: str) -> Callable[[Iterable[str], Iterable[str]], float]:
+def get_metric_fn(name: str) -> Callable[[Iterable[str], Iterable[object]], float]:
     name = name.lower()
-    if name in {"exact_match", "em", "accuracy"}:
+    if name in {"exact_match", "em"}:
         return exact_match_score
+    if name in {"accuracy", "multi_choice", "mc", "mc_accuracy"}:
+        return multi_choice_accuracy
+    if name in {"vqa", "vqa_accuracy", "textvqa"}:
+        return vqa_accuracy_score
     raise ValueError(f"Unknown metric: {name}")
 
 
@@ -47,6 +51,16 @@ _PRESET_JSONL = {
     "mmmu_validation": "data/processed/mmmu/mmmu_validation.jsonl",
     "textvqa": "data/processed/textvqa/textvqa_validation.jsonl",
     "textvqa_validation": "data/processed/textvqa/textvqa_validation.jsonl",
+}
+
+_PRESET_METRICS = {
+    "mmbench": "multi_choice",
+    "mmbench_test": "multi_choice",
+    "mmbench_dev": "multi_choice",
+    "mmmu": "multi_choice",
+    "mmmu_validation": "multi_choice",
+    "textvqa": "vqa_accuracy",
+    "textvqa_validation": "vqa_accuracy",
 }
 
 
@@ -70,6 +84,7 @@ def _load_preset_specs(raw: str, cfg: Config) -> List[EvalDatasetSpec]:
                 name=key,
                 source="jsonl",
                 jsonl=jsonl,
+                metric=_PRESET_METRICS.get(key, "exact_match"),
                 prompt_template=cfg.data.prompt_template,
                 text_field=cfg.data.text_field,
                 answer_field=cfg.data.answer_field,
