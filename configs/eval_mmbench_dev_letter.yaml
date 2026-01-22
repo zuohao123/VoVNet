@@ -1,0 +1,10 @@
+defaults:
+  prompt_template: "Question: {question}\nAnswer:"
+  metric: "multi_choice"
+  text_field: "question"
+  answer_field: "answer"
+  image_field: "image"
+datasets:
+  - name: "mmbench_dev"
+    source: "jsonl"
+    jsonl: "data/processed/mmbench/mmbench_dev.jsonl"

@@ -10,7 +10,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --pareto 0 0.01 0.02 0.05 0.1
       --output_dir outputs/eval/quick_200/mmbench_dev_pareto
@@ -22,7 +22,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --output_dir outputs/eval/quick_200/mmbench_dev_always_full
     output_dir: outputs/eval/quick_200/mmbench_dev_always_full
@@ -33,7 +33,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --output_dir outputs/eval/quick_200/mmbench_dev_always_coarse
     output_dir: outputs/eval/quick_200/mmbench_dev_always_coarse
@@ -44,7 +44,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --output_dir outputs/eval/quick_200/mmbench_dev_no_vision
     output_dir: outputs/eval/quick_200/mmbench_dev_no_vision
@@ -55,7 +55,7 @@ jobs:
       python -m scripts.pareto_threshold
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
       --uncertainty entropy --vision full
@@ -68,7 +68,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --output_dir outputs/eval/quick_200/mmbench_dev_random_matched
     output_dir: outputs/eval/quick_200/mmbench_dev_random_matched
@@ -79,7 +79,7 @@ jobs:
       python -m scripts.pareto_pruning
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --ratios 1.0 0.75 0.50 0.25
       --mode stride
@@ -92,7 +92,7 @@ jobs:
       python -m scripts.pareto_merge
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --merge_ratio_list 0.25,0.5,0.75,1.0
       --merge_mode cosine --merge_weight norm
@@ -106,7 +106,7 @@ jobs:
       python -m scripts.pareto_resolution
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --vision_budget_list 224,336,448
       --output_dir outputs/eval/quick_200/mmbench_dev_resolution
@@ -118,7 +118,7 @@ jobs:
       python -m scripts.pareto_granularity
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmbench_dev_mc.yaml
+      --dataset_config configs/eval_mmbench_dev_letter.yaml
       --checkpoint $CKPT
       --pooling_list 1,2,4
       --output_dir outputs/eval/quick_200/mmbench_dev_granularity
@@ -130,7 +130,7 @@ jobs:
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN
       --config $EVAL_SINGLE --config $EVAL_QUICK
-      --dataset_config configs/eval_mmmu_mc.yaml
+      --dataset_config configs/eval_mmmu_letter.yaml
       --checkpoint $CKPT
       --output_dir outputs/eval/quick_200/mmmu_policy
     output_dir: outputs/eval/quick_200/mmmu_policy
