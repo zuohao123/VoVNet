@@ -9,6 +9,10 @@ from src.config.config import Config
 from src.eval.matrix_spec import load_dataset_specs
 from src.eval.matrix_runner import run_eval_matrix
 from src.utils.seed import set_seed
+from src.utils.logging import setup_logging
+
+
+logger = setup_logging(__name__)
 
 
 def parse_args() -> argparse.Namespace:
