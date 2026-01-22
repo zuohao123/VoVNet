@@ -606,6 +606,29 @@ class BaseVLM(nn.Module):
                 if child is not None and child is not obj:
                     queue.append(child)
 
+    def _select_get_features_target(self, root: Any) -> Optional[Any]:
+        candidates = []
+        visual_candidates = []
+        for obj in self._iter_pruning_targets(root):
+            if getattr(obj, "get_image_features", None) is None:
+                continue
+            candidates.append(obj)
+            if getattr(obj, "visual", None) is not None:
+                visual_candidates.append(obj)
+        if visual_candidates:
+            return visual_candidates[-1]
+        if candidates:
+            return candidates[-1]
+        return None
+
+    def _select_visual_target(self, root: Any) -> Optional[Any]:
+        visual = None
+        for obj in self._iter_pruning_targets(root):
+            candidate = getattr(obj, "visual", None)
+            if candidate is not None and hasattr(candidate, "forward"):
+                visual = candidate
+        return visual
+
     @contextmanager
     def _vision_pruning(self, spec: Optional[VisionPruningSpec]):
         if spec is None:
@@ -617,31 +640,25 @@ class BaseVLM(nn.Module):
         target = self.model
         patched: list[tuple[Any, str, Any]] = []
 
-        # Patch all reachable get_image_features (handles PEFT/base wrappers).
-        for obj in self._iter_pruning_targets(target):
-            get_features = getattr(obj, "get_image_features", None)
-            if get_features is None:
-                continue
-            original = get_features
+        get_target = self._select_get_features_target(target)
+        if get_target is not None:
+            original = get_target.get_image_features
 
             def patched_get(*args: Any, __orig=original, **kwargs: Any):
                 return self._apply_pruning(__orig(*args, **kwargs), spec)
 
-            setattr(obj, "get_image_features", patched_get)
-            patched.append((obj, "get_image_features", original))
+            setattr(get_target, "get_image_features", patched_get)
+            patched.append((get_target, "get_image_features", original))
+        else:
+            visual = self._select_visual_target(target)
+            if visual is not None:
+                original_forward = visual.forward
 
-        # Patch visual.forward as a fallback if present.
-        for obj in self._iter_pruning_targets(target):
-            visual = getattr(obj, "visual", None)
-            if visual is None or not hasattr(visual, "forward"):
-                continue
-            original_forward = visual.forward
+                def patched_forward(*args: Any, __orig=original_forward, **kwargs: Any):
+                    return self._apply_pruning(__orig(*args, **kwargs), spec)
 
-            def patched_forward(*args: Any, __orig=original_forward, **kwargs: Any):
-                return self._apply_pruning(__orig(*args, **kwargs), spec)
-
-            visual.forward = patched_forward
-            patched.append((visual, "forward", original_forward))
+                visual.forward = patched_forward
+                patched.append((visual, "forward", original_forward))
 
         try:
             yield

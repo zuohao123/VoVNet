@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
+import logging
 
 import torch
 from torch.nn import functional as F
@@ -25,6 +26,8 @@ from src.models.uncertainty import expected_calibration_error
 from src.models.vovnet import Action, VoVNet, VisionInputs
 from src.models.vision_budget import VisionBudgetController
 from src.utils.profiling import BatchProfiler
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -680,7 +683,7 @@ def _evaluate_reference_policy(
 def evaluate_dataset(
     model: VoVNet,
     loader: DataLoader,
-    metric_fn: Callable[[Iterable[str], Iterable[str]], float],
+    metric_fn: Callable[[Iterable[str], Iterable[object]], float],
     cost_weight: Optional[float],
     profile: bool,
     baseline_name: Optional[str],
@@ -700,6 +703,10 @@ def evaluate_dataset(
     baseline_prune_ratio: float,
     baseline_prune_mode: str,
     baseline_pool_factor: int,
+    dataset_name: Optional[str] = None,
+    log_pred_interval: int = 0,
+    log_pred_examples: int = 1,
+    log_pred_max_chars: int = 200,
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
     raw_model.eval()
@@ -744,8 +751,18 @@ def evaluate_dataset(
                 bucket_thresholds = _compute_bucket_thresholds(raw_model, loader)
 
     tokenizer = raw_model.base_vlm.tokenizer
+
+    def _truncate(text: str) -> str:
+        if log_pred_max_chars and len(text) > log_pred_max_chars:
+            return text[: log_pred_max_chars - 3] + "..."
+        return text
+
+    is_main = True
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        is_main = torch.distributed.get_rank() == 0
+
     with torch.no_grad():
-        for batch in loader:
+        for step_idx, batch in enumerate(loader, start=1):
             if batch is None:
                 continue
             batch = _move_batch_to_device(batch, device)
@@ -812,6 +829,25 @@ def evaluate_dataset(
             preds = _decode_from_logits(outputs["logits"], labels, tokenizer)
             acc = metric_fn(preds, batch.get("answers", []))
             total_acc += acc * len(preds)
+            if log_pred_interval and is_main and step_idx % log_pred_interval == 0:
+                questions = batch.get("questions", [])
+                answers = batch.get("answers", [])
+                actions = outputs["actions"].detach().cpu().tolist()
+                for i in range(min(log_pred_examples, len(preds))):
+                    action_name = Action(actions[i]).name if i < len(actions) else "UNK"
+                    q = _truncate(str(questions[i])) if i < len(questions) else ""
+                    a = _truncate(str(answers[i])) if i < len(answers) else ""
+                    p = _truncate(str(preds[i]))
+                    logger.info(
+                        "eval_sample dataset=%s step=%d idx=%d action=%s pred=%s answer=%s question=%s",
+                        dataset_name or "dataset",
+                        step_idx,
+                        i,
+                        action_name,
+                        p,
+                        a,
+                        q,
+                    )
             total_cost += outputs["expected_cost"].sum().item()
             total_count += len(preds)
             action_counts += torch.bincount(

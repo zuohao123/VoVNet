@@ -130,6 +130,9 @@ class EvalConfig:
     do_sample: bool = False
     temperature: float = 1.0
     profile: bool = False
+    log_pred_interval: int = 0
+    log_pred_examples: int = 1
+    log_pred_max_chars: int = 200
 
 
 @dataclass
@@ -381,6 +384,9 @@ def _coerce_types(cfg: Config) -> None:
     cfg.eval.max_new_tokens = _to_int(cfg.eval.max_new_tokens, "eval.max_new_tokens")
     cfg.eval.num_beams = _to_int(cfg.eval.num_beams, "eval.num_beams")
     cfg.eval.temperature = _to_float(cfg.eval.temperature, "eval.temperature")
+    cfg.eval.log_pred_interval = _to_int(cfg.eval.log_pred_interval, "eval.log_pred_interval")
+    cfg.eval.log_pred_examples = _to_int(cfg.eval.log_pred_examples, "eval.log_pred_examples")
+    cfg.eval.log_pred_max_chars = _to_int(cfg.eval.log_pred_max_chars, "eval.log_pred_max_chars")
 
     cfg.policy.gumbel_tau = _to_float(cfg.policy.gumbel_tau, "policy.gumbel_tau")
     cfg.policy.cost_scale = _to_float(cfg.policy.cost_scale, "policy.cost_scale")

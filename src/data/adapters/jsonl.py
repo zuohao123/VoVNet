@@ -53,7 +53,10 @@ class JsonlVQADataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.items[idx]
         question = str(item.get(self.text_field, ""))
-        answer = self._resolve_answer(item.get(self.answer_field))
+        answer_value = item.get(self.answer_field)
+        answer = self._resolve_answer(answer_value)
+        context = item.get("context") or item.get("hint") or item.get("rationale")
+        choices = item.get("choices") or item.get("options") or item.get("candidates")
         image_path = item.get(self.image_field)
         image = self._load_image(image_path) if image_path else None
         sample_id = str(item.get("id", idx))
@@ -61,7 +64,10 @@ class JsonlVQADataset(Dataset):
         return {
             "question": question,
             "answer": answer,
+            "answer_info": answer_value,
             "image": image,
+            "context": context,
+            "choices": choices,
             "id": sample_id,
             "meta": meta,
         }
@@ -70,6 +76,11 @@ class JsonlVQADataset(Dataset):
         if value is None:
             return ""
         if isinstance(value, dict):
+            label = value.get("label")
+            if label is not None:
+                letter = self._label_to_letter(label)
+                if letter is not None:
+                    return letter
             text = value.get("text")
             if text not in (None, ""):
                 return str(text)
@@ -78,9 +89,6 @@ class JsonlVQADataset(Dataset):
                 return str(raw[0])
             if raw not in (None, "", []):
                 return str(raw)
-            label = value.get("label")
-            if label is not None:
-                return str(label)
             return ""
         if isinstance(value, list):
             for item in value:
@@ -88,6 +96,27 @@ class JsonlVQADataset(Dataset):
                     return str(item)
             return ""
         return str(value)
+
+    def _label_to_letter(self, label: Any) -> Optional[str]:
+        if label is None:
+            return None
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if isinstance(label, int):
+            if 0 <= label < len(letters):
+                return letters[label]
+            if 1 <= label <= len(letters):
+                return letters[label - 1]
+            return None
+        label_str = str(label).strip()
+        if label_str.isdigit():
+            idx = int(label_str)
+            if 0 <= idx < len(letters):
+                return letters[idx]
+            if 1 <= idx <= len(letters):
+                return letters[idx - 1]
+        if len(label_str) == 1 and label_str.upper() in letters:
+            return label_str.upper()
+        return None
 
     def _load_image(self, image_path: Any) -> Optional[Image.Image]:
         if image_path is None:
