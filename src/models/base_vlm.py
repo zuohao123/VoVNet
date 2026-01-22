@@ -615,42 +615,39 @@ class BaseVLM(nn.Module):
             yield
             return
         target = self.model
+        patched: list[tuple[Any, str, Any]] = []
 
-        # Patch any reachable get_image_features (handles PEFT/base wrappers).
+        # Patch all reachable get_image_features (handles PEFT/base wrappers).
         for obj in self._iter_pruning_targets(target):
             get_features = getattr(obj, "get_image_features", None)
             if get_features is None:
                 continue
             original = get_features
 
-            def patched(*args: Any, **kwargs: Any):
-                return self._apply_pruning(original(*args, **kwargs), spec)
+            def patched_get(*args: Any, __orig=original, **kwargs: Any):
+                return self._apply_pruning(__orig(*args, **kwargs), spec)
 
-            setattr(obj, "get_image_features", patched)
-            try:
-                yield
-            finally:
-                setattr(obj, "get_image_features", original)
-            return
+            setattr(obj, "get_image_features", patched_get)
+            patched.append((obj, "get_image_features", original))
 
-        # Fallback: patch visual.forward (top-level or nested).
+        # Patch visual.forward as a fallback if present.
         for obj in self._iter_pruning_targets(target):
             visual = getattr(obj, "visual", None)
             if visual is None or not hasattr(visual, "forward"):
                 continue
             original_forward = visual.forward
 
-            def patched_forward(*args: Any, **kwargs: Any):
-                return self._apply_pruning(original_forward(*args, **kwargs), spec)
+            def patched_forward(*args: Any, __orig=original_forward, **kwargs: Any):
+                return self._apply_pruning(__orig(*args, **kwargs), spec)
 
             visual.forward = patched_forward
-            try:
-                yield
-            finally:
-                visual.forward = original_forward
-            return
+            patched.append((visual, "forward", original_forward))
 
-        yield
+        try:
+            yield
+        finally:
+            for obj, name, original in reversed(patched):
+                setattr(obj, name, original)
 
     def freeze_vision_encoder(self) -> None:
         """Freeze vision-related parameters by name heuristic."""
