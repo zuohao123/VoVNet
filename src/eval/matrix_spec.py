@@ -11,7 +11,12 @@ import yaml
 from src.config.config import Config
 from src.data.adapters.hf_dataset import HFDatasetAdapter
 from src.data.adapters.jsonl import JsonlVQADataset
-from src.eval.metrics import exact_match_score, multi_choice_accuracy, vqa_accuracy_score
+from src.eval.metrics import (
+    exact_match_score,
+    multi_choice_accuracy,
+    multi_choice_fuzzy_accuracy,
+    vqa_accuracy_score,
+)
 
 
 @dataclass
@@ -38,6 +43,8 @@ def get_metric_fn(name: str) -> Callable[[Iterable[str], Iterable[object]], floa
         return exact_match_score
     if name in {"accuracy", "multi_choice", "mc", "mc_accuracy"}:
         return multi_choice_accuracy
+    if name in {"mc_fuzzy", "multi_choice_fuzzy", "mc_soft"}:
+        return multi_choice_fuzzy_accuracy
     if name in {"vqa", "vqa_accuracy", "textvqa"}:
         return vqa_accuracy_score
     raise ValueError(f"Unknown metric: {name}")

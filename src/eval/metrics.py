@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Iterable, List, Optional
 
 
@@ -182,6 +183,58 @@ def multi_choice_accuracy(preds: Iterable[str], refs: Iterable[object]) -> float
                 if cand and (pred_norm in cand or cand in pred_norm):
                     correct += 1
                     break
+    return correct / len(preds)
+
+
+def _fuzzy_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def multi_choice_fuzzy_accuracy(
+    preds: Iterable[str], refs: Iterable[object], threshold: float = 0.55
+) -> float:
+    """Lenient MC accuracy: allow fuzzy match to the correct choice text."""
+    preds = list(preds)
+    refs = list(refs)
+    if not preds:
+        return 0.0
+    correct = 0
+    for pred, ref in zip(preds, refs):
+        pred_norm = _normalize_choice(pred)
+        pred_letter = _extract_choice_letter(pred)
+        candidates = _extract_answer_list(ref)
+        normalized = {
+            _normalize_choice(item) for item in candidates if item not in (None, "")
+        }
+        label_letter = None
+        if isinstance(ref, dict):
+            label_letter = _label_to_letter(ref.get("label"))
+        candidate_letters = {label_letter} if label_letter else set()
+        for cand in candidates:
+            letter = _extract_choice_letter(cand)
+            if letter:
+                candidate_letters.add(letter)
+        if pred_letter and pred_letter in candidate_letters:
+            correct += 1
+            continue
+        if pred_norm in normalized:
+            correct += 1
+            continue
+        if pred_norm:
+            for cand in normalized:
+                if cand and (pred_norm in cand or cand in pred_norm):
+                    correct += 1
+                    break
+            else:
+                scores = [
+                    _fuzzy_similarity(pred_norm, cand)
+                    for cand in normalized
+                    if cand
+                ]
+                if scores and max(scores) >= threshold:
+                    correct += 1
     return correct / len(preds)
 
 

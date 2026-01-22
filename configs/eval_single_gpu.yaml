@@ -1,0 +1,5 @@
+model:
+  torch_dtype: "float16"
+
+eval:
+  batch_size: 1

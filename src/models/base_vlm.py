@@ -58,6 +58,7 @@ class VisionPruningSpec:
     merge_weight: str = "norm"
     pool_factor: int = 1
     image_grid_thw: Optional[torch.Tensor] = None
+    pad_to_length: bool = False
 
 
 class BaseVLM(nn.Module):
@@ -489,6 +490,11 @@ class BaseVLM(nn.Module):
         if isinstance(outputs, tuple) and len(outputs) >= 2:
             image_embeds, deepstack = outputs[:2]
             if isinstance(image_embeds, torch.Tensor):
+                orig_tokens = (
+                    image_embeds.size(0)
+                    if image_embeds.dim() == 2
+                    else image_embeds.size(1)
+                )
                 if spec.mode == "pool":
                     pooled_embeds = self._pool_by_grid(
                         image_embeds, spec.image_grid_thw, spec.pool_factor
@@ -506,6 +512,9 @@ class BaseVLM(nn.Module):
                                 else:
                                     pruned_list.append(item)
                             pruned_deepstack = type(deepstack)(pruned_list)
+                        if spec.pad_to_length:
+                            pruned_embeds = self._pad_embeddings(pruned_embeds, orig_tokens)
+                            pruned_deepstack = self._pad_deepstack(pruned_deepstack, orig_tokens)
                         return (pruned_embeds, pruned_deepstack, *outputs[2:])
 
                     pooled_deepstack = deepstack
@@ -525,6 +534,9 @@ class BaseVLM(nn.Module):
                             else:
                                 pooled_list.append(item)
                         pooled_deepstack = type(deepstack)(pooled_list)
+                    if spec.pad_to_length:
+                        pooled_embeds = self._pad_embeddings(pooled_embeds, orig_tokens)
+                        pooled_deepstack = self._pad_deepstack(pooled_deepstack, orig_tokens)
                     return (pooled_embeds, pooled_deepstack, *outputs[2:])
 
                 if spec.mode.startswith("merge_"):
@@ -569,7 +581,13 @@ class BaseVLM(nn.Module):
                                 else:
                                     pruned_list.append(item)
                             pruned_deepstack = type(merged_deepstack)(pruned_list)
+                        if spec.pad_to_length:
+                            pruned_embeds = self._pad_embeddings(pruned_embeds, orig_tokens)
+                            pruned_deepstack = self._pad_deepstack(pruned_deepstack, orig_tokens)
                         return (pruned_embeds, pruned_deepstack, *outputs[2:])
+                    if spec.pad_to_length:
+                        merged_embeds = self._pad_embeddings(merged_embeds, orig_tokens)
+                        merged_deepstack = self._pad_deepstack(merged_deepstack, orig_tokens)
                     return (merged_embeds, merged_deepstack, *outputs[2:])
 
                 pruned_embeds, indices = self._prune_embeddings(image_embeds, spec)
@@ -586,8 +604,41 @@ class BaseVLM(nn.Module):
                     else:
                         pruned_list.append(item)
                 pruned_deepstack = type(deepstack)(pruned_list)
+            if spec.pad_to_length:
+                pruned_embeds = self._pad_embeddings(pruned_embeds, orig_tokens)
+                pruned_deepstack = self._pad_deepstack(pruned_deepstack, orig_tokens)
             return (pruned_embeds, pruned_deepstack, *outputs[2:])
         return outputs
+
+    def _pad_embeddings(self, embeds: torch.Tensor, target_len: int) -> torch.Tensor:
+        if target_len <= 0:
+            return embeds
+        if embeds.dim() == 2:
+            pad_len = target_len - embeds.size(0)
+            if pad_len <= 0:
+                return embeds
+            pad = embeds.new_zeros((pad_len, embeds.size(1)))
+            return torch.cat([embeds, pad], dim=0)
+        if embeds.dim() == 3:
+            pad_len = target_len - embeds.size(1)
+            if pad_len <= 0:
+                return embeds
+            pad = embeds.new_zeros((embeds.size(0), pad_len, embeds.size(2)))
+            return torch.cat([embeds, pad], dim=1)
+        return embeds
+
+    def _pad_deepstack(self, deepstack: Any, target_len: int) -> Any:
+        if isinstance(deepstack, torch.Tensor):
+            return self._pad_embeddings(deepstack, target_len)
+        if isinstance(deepstack, (list, tuple)):
+            padded_list = []
+            for item in deepstack:
+                if isinstance(item, torch.Tensor):
+                    padded_list.append(self._pad_embeddings(item, target_len))
+                else:
+                    padded_list.append(item)
+            return type(deepstack)(padded_list)
+        return deepstack
 
     def _iter_pruning_targets(self, root: Any):
         queue = [root]
@@ -639,16 +690,19 @@ class BaseVLM(nn.Module):
             return
         target = self.model
         patched: list[tuple[Any, str, Any]] = []
+        get_targets = []
+        for obj in self._iter_pruning_targets(target):
+            if getattr(obj, "get_image_features", None) is not None:
+                get_targets.append(obj)
+        if get_targets:
+            for get_target in get_targets:
+                original = get_target.get_image_features
 
-        get_target = self._select_get_features_target(target)
-        if get_target is not None:
-            original = get_target.get_image_features
+                def patched_get(*args: Any, __orig=original, **kwargs: Any):
+                    return self._apply_pruning(__orig(*args, **kwargs), spec)
 
-            def patched_get(*args: Any, __orig=original, **kwargs: Any):
-                return self._apply_pruning(__orig(*args, **kwargs), spec)
-
-            setattr(get_target, "get_image_features", patched_get)
-            patched.append((get_target, "get_image_features", original))
+                setattr(get_target, "get_image_features", patched_get)
+                patched.append((get_target, "get_image_features", original))
         else:
             visual = self._select_visual_target(target)
             if visual is not None:

@@ -1,0 +1,10 @@
+defaults:
+  prompt_template: "Question: {question}\nAnswer:"
+  metric: "vqa_accuracy"
+  text_field: "question"
+  answer_field: "answer"
+  image_field: "image"
+datasets:
+  - name: "textvqa"
+    source: "jsonl"
+    jsonl: "data/processed/textvqa/textvqa_validation.jsonl"

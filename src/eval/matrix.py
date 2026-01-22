@@ -23,7 +23,7 @@ from src.data.collate import VLMDataCollator
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, get_metric_fn
 from src.models.base_vlm import BaseVLM, VisionPruningSpec
 from src.models.uncertainty import expected_calibration_error
-from src.models.vovnet import Action, VoVNet, VisionInputs
+from src.models.vovnet import Action, VoVNet
 from src.models.vision_budget import VisionBudgetController
 from src.utils.profiling import BatchProfiler
 
@@ -299,9 +299,6 @@ def _forward_with_vision_token_pruning_proxy(
         outputs["action_label"] = "PRUNING_PROXY_TEXT_ONLY"
         return outputs
 
-    text_outputs, _, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-    )
     token_count_coarse, token_count_full, _, full_inputs = (
         raw_model._prepare_token_counts(
             images=images,
@@ -314,36 +311,31 @@ def _forward_with_vision_token_pruning_proxy(
         outputs["action_label"] = "PRUNING_PROXY_TEXT_ONLY"
         return outputs
 
-    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
-    keep_counts = full_model.compute_pruned_counts(token_count_full, pruning_ratio)
-    keep_counts = keep_counts.to(device=batch["input_ids"].device, dtype=torch.long)
-
-    pruned_inputs = VisionInputs(
-        pixel_values=None,
-        token_counts=keep_counts,
-        image_grid_thw=None,
-    )
-    raw_model._prepare_text_and_vision_inputs(
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
         input_ids=batch["input_ids"],
         attention_mask=batch["attention_mask"],
         labels=batch.get("labels"),
         coarse_inputs=None,
-        full_inputs=pruned_inputs,
+        full_inputs=full_inputs,
     )
-    full_inputs.input_ids = pruned_inputs.input_ids
-    full_inputs.attention_mask = pruned_inputs.attention_mask
-    full_inputs.labels = pruned_inputs.labels
-    full_inputs.token_counts = keep_counts
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
+
+    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+    keep_counts = full_model.compute_pruned_counts(token_count_full, pruning_ratio)
+    keep_counts = keep_counts.to(device=batch["input_ids"].device, dtype=torch.long)
 
     pruning_spec = VisionPruningSpec(
         ratio=float(pruning_ratio),
         mode=pruning_mode,
         min_tokens=1,
         keep_counts=keep_counts,
+        pad_to_length=True,
     )
     logits, _ = raw_model._forward_mode(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=images,
         text_outputs=text_outputs,
         mode="full",
@@ -368,7 +360,7 @@ def _forward_with_vision_token_pruning_proxy(
         "vision_tokens": keep_counts.float(),
         "remaining_vision_tokens": keep_counts.float(),
         "action_label": action_label,
-        "labels": full_inputs.labels,
+        "labels": full_inputs.labels if full_inputs is not None else text_labels,
     }
 
 
@@ -389,9 +381,6 @@ def _forward_with_token_merge_prune_proxy(
         outputs["action_label"] = "MERGE_PROXY_TEXT_ONLY"
         return outputs
 
-    text_outputs, _, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-    )
     token_count_coarse, token_count_full, _, full_inputs = (
         raw_model._prepare_token_counts(
             images=images,
@@ -404,28 +393,22 @@ def _forward_with_token_merge_prune_proxy(
         outputs["action_label"] = "MERGE_PROXY_TEXT_ONLY"
         return outputs
 
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=None,
+        full_inputs=full_inputs,
+    )
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
+
     full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
     merge_counts = full_model.compute_pruned_counts(token_count_full, merge_ratio)
     final_counts = merge_counts
     if enable_prune:
         final_counts = full_model.compute_pruned_counts(merge_counts, prune_ratio)
-
-    merge_inputs = VisionInputs(
-        pixel_values=None,
-        token_counts=final_counts,
-        image_grid_thw=None,
-    )
-    raw_model._prepare_text_and_vision_inputs(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
-        labels=batch.get("labels"),
-        coarse_inputs=None,
-        full_inputs=merge_inputs,
-    )
-    full_inputs.input_ids = merge_inputs.input_ids
-    full_inputs.attention_mask = merge_inputs.attention_mask
-    full_inputs.labels = merge_inputs.labels
-    full_inputs.token_counts = final_counts
 
     merge_spec = VisionPruningSpec(
         ratio=float(merge_ratio),
@@ -436,10 +419,11 @@ def _forward_with_token_merge_prune_proxy(
         prune_ratio=float(prune_ratio),
         prune_mode=prune_mode,
         merge_weight=merge_weight,
+        pad_to_length=True,
     )
     logits, _ = raw_model._forward_mode(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=images,
         text_outputs=text_outputs,
         mode="full",
@@ -463,7 +447,7 @@ def _forward_with_token_merge_prune_proxy(
         "vision_tokens": final_counts.float(),
         "remaining_vision_tokens": final_counts.float(),
         "action_label": "MERGE_PROXY_FULL",
-        "labels": full_inputs.labels,
+        "labels": full_inputs.labels if full_inputs is not None else text_labels,
         "merge_ratio": float(merge_ratio),
         "prune_ratio": float(prune_ratio) if enable_prune else 1.0,
         "merge_mode": merge_mode,
@@ -506,10 +490,6 @@ def _forward_with_multi_granularity_proxy(
         outputs = _forward_with_cost(raw_model, batch, cost_weight=None)
         outputs["action_label"] = "GRANULARITY_TEXT_ONLY"
         return outputs
-
-    text_outputs, _, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-    )
     token_count_coarse, token_count_full, _, full_inputs = (
         raw_model._prepare_token_counts(
             images=images,
@@ -522,6 +502,17 @@ def _forward_with_multi_granularity_proxy(
         outputs["action_label"] = "GRANULARITY_TEXT_ONLY"
         return outputs
 
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=None,
+        full_inputs=full_inputs,
+    )
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
+
     pool_factor = max(1, int(pool_factor))
     merged_grid = full_inputs.image_grid_thw
     if merged_grid is not None:
@@ -533,23 +524,6 @@ def _forward_with_multi_granularity_proxy(
         merged_grid, token_count_full, pool_factor
     ).to(dtype=torch.long)
 
-    pool_inputs = VisionInputs(
-        pixel_values=None,
-        token_counts=pooled_counts,
-        image_grid_thw=None,
-    )
-    raw_model._prepare_text_and_vision_inputs(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
-        labels=batch.get("labels"),
-        coarse_inputs=None,
-        full_inputs=pool_inputs,
-    )
-    full_inputs.input_ids = pool_inputs.input_ids
-    full_inputs.attention_mask = pool_inputs.attention_mask
-    full_inputs.labels = pool_inputs.labels
-    full_inputs.token_counts = pooled_counts
-
     ratio = 1.0 / float(pool_factor * pool_factor) if pool_factor > 1 else 1.0
     pool_spec = VisionPruningSpec(
         ratio=ratio,
@@ -558,10 +532,11 @@ def _forward_with_multi_granularity_proxy(
         keep_counts=pooled_counts,
         pool_factor=pool_factor,
         image_grid_thw=merged_grid,
+        pad_to_length=True,
     )
     logits, _ = raw_model._forward_mode(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=images,
         text_outputs=text_outputs,
         mode="full",
@@ -585,7 +560,7 @@ def _forward_with_multi_granularity_proxy(
         "vision_tokens": pooled_counts.float(),
         "remaining_vision_tokens": pooled_counts.float(),
         "action_label": f"GRANULARITY_{pool_factor}",
-        "labels": full_inputs.labels,
+        "labels": full_inputs.labels if full_inputs is not None else text_labels,
         "pool_factor": pool_factor,
     }
 

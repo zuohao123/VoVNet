@@ -11,8 +11,7 @@ All experiments **must use the same evaluation pipeline** and **unified settings
 **Unified evaluation pipeline**
 - Use `scripts/eval.py` (matrix runner) or wrapper sweep scripts that call the same evaluation core (`src/eval/matrix.evaluate_dataset`).
 - All baselines must use the same prompt template and decoding settings from config.
-- `--dataset_config` supports preset names to avoid temp YAML files:
-  - `mmbench`, `mmmu`, `textvqa` (comma lists allowed, e.g. `"mmbench,mmmu,textvqa"`).
+- Use **text-answer dataset configs** to avoid format mismatch (see below). Preset names like `mmbench` are not safe because MMBench test answers are empty.
 
 **Background execution**
 - Create log directory once: `mkdir -p logs`
@@ -25,6 +24,45 @@ All experiments **must use the same evaluation pipeline** and **unified settings
 - Vision budget: `vision_budget.*` (coarse/full long side, max pixels, patch size).
 - Cost definition: `expected_cost` computed from **vision token counts**.  
   For pruning baseline, cost is computed from **remaining vision tokens** (`remaining_vision_tokens`).
+
+**Answer format (important)**
+- MMBench/MMMU are multi-choice but the **checkpoint was trained to output text answers**, not letters.
+- Use the text-answer JSONL files generated below and the dataset configs in `configs/` to avoid zero-accuracy due to format mismatch.
+- MMBench **test** JSONL has empty answers → use **MMBench dev** for main results.
+
+**One-time dataset prep (text answers for multi-choice)**
+```bash
+python - <<'PY'
+import json
+
+def dump_text(src, dst):
+    with open(src) as f, open(dst, "w") as out:
+        for line in f:
+            ex = json.loads(line)
+            ans = ex.get("answer")
+            text = ""
+            if isinstance(ans, dict):
+                text = ans.get("text") or ""
+            elif ans is not None:
+                text = str(ans)
+            ex["answer_text"] = text
+            out.write(json.dumps(ex, ensure_ascii=True) + "\\n")
+    print("wrote", dst)
+
+dump_text("data/processed/mmbench/mmbench_dev.jsonl",
+          "data/processed/mmbench/mmbench_dev_text.jsonl")
+dump_text("data/processed/mmmu/mmmu_validation.jsonl",
+          "data/processed/mmmu/mmmu_validation_text.jsonl")
+PY
+```
+
+**Eval configs (do not override training configs)**
+- `configs/eval_mmbench_dev_text.yaml`
+- `configs/eval_mmbench_dev_text_fuzzy.yaml` (optional: lenient MC scoring; report as such)
+- `configs/eval_mmmu_text.yaml`
+- `configs/eval_textvqa.yaml`
+- `configs/eval_single_gpu.yaml` (forces fp16 + batch=1)
+- `configs/eval_quick_200.yaml` (optional sanity: 200 samples)
 
 **Output contract (required for all experiments)**
 - Primary outputs: `results.csv` + `summary.json` in the experiment `output_dir`.
@@ -54,15 +92,15 @@ All experiments **must use the same evaluation pipeline** and **unified settings
 **Purpose**: produce a trained checkpoint for the main results.
 
 **Config**
-- Train split: `data.train_jsonl` in `configs/train_mmbench_llava_textvqa.yaml`.
-- Eval split: `data.eval_jsonl` in `configs/train_mmbench_llava_textvqa.yaml`.
+- Train split: `data.train_jsonl` in `configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml`.
+- Eval split: `data.eval_jsonl` in `configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml`.
 - Two-stage training is enabled by `training.stage1_epochs` and `training.stage1_baseline_name`.
 
 **Command**
 ```bash
 nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
   > logs/train_ddp_mmbench_llava_textvqa.out 2>&1 &
 ```
 
@@ -74,24 +112,26 @@ nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
 - Checkpoints appear every `training.save_every` steps.
 - Training log shows stage1 then stage2 (two-stage schedule).
 
-### A1. MMBench Test Pareto (lambda_cost sweep)
+### A1. MMBench Dev Pareto (lambda_cost sweep, text answers)
 **Purpose**: main accuracy-cost tradeoff curve (reviewers' core question).
 
 **Config**
-- Use `configs/base.yaml` + `configs/train_mmbench_llava_textvqa.yaml`.
-- Eval split: `--dataset_config mmbench` (MMBench test).
+- Use `configs/base.yaml` + `configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml`.
+- Eval split: `configs/eval_mmbench_dev_text.yaml` (MMBench dev, text answers).
 - Baseline: `policy.baseline_name: null` (VoVNet).
 - Sweep `--pareto` list for lambda_cost.
 
 **Command**
 ```bash
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=0 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
-  --output_dir outputs/pareto_vovnet \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pareto \
   --pareto 0 0.01 0.02 0.05 0.1 \
-  > logs/eval_pareto_vovnet.out 2>&1 &
+  > logs/mmbench_dev_pareto.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -118,14 +158,16 @@ YAML
 
 **Command (repeat for 2-3 seeds)**
 ```bash
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=0 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/seed_42.yaml \
-  --output_dir outputs/pareto_vovnet_seed42 \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pareto_seed42 \
   --pareto 0.02 0.05 0.1 \
-  > logs/eval_pareto_vovnet_seed42.out 2>&1 &
+  > logs/mmbench_dev_pareto_seed42.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -152,37 +194,43 @@ cat > configs/baseline_always_full.yaml <<'YAML'
 policy:
   baseline_name: "always_full"
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=1 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/baseline_always_full \
-  > logs/eval_baseline_always_full.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_always_full \
+  > logs/mmbench_dev_always_full.out 2>&1 &
 
 cat > configs/baseline_always_coarse.yaml <<'YAML'
 policy:
   baseline_name: "always_coarse"
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=2 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_always_coarse.yaml \
-  --output_dir outputs/baseline_always_coarse \
-  > logs/eval_baseline_always_coarse.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_always_coarse \
+  > logs/mmbench_dev_always_coarse.out 2>&1 &
 
 cat > configs/baseline_no_vision.yaml <<'YAML'
 policy:
   baseline_name: "no_vision"
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=3 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_no_vision.yaml \
-  --output_dir outputs/baseline_no_vision \
-  > logs/eval_baseline_no_vision.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_no_vision \
+  > logs/mmbench_dev_no_vision.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -211,26 +259,30 @@ policy:
   baseline_threshold: 0.50
   baseline_vision: "full"
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=4 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_uncertainty_entropy_full.yaml \
-  --output_dir outputs/baseline_uncertainty_t0_50 \
-  > logs/eval_baseline_uncertainty_t0_50.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_uncertainty_t0_50 \
+  > logs/mmbench_dev_uncertainty_t0_50.out 2>&1 &
 ```
 
 **Command (Pareto sweep, writes pareto_threshold.csv/json)**
 ```bash
-nohup python -m scripts.pareto_threshold \
+CUDA_VISIBLE_DEVICES=5 nohup python -m scripts.pareto_threshold \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
-  --output_dir outputs/pareto_threshold_entropy_full \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_uncertainty \
   --thresholds 0.10 0.20 0.30 0.40 0.50 \
   --uncertainty entropy \
   --vision full \
-  > logs/pareto_threshold_entropy_full.out 2>&1 &
+  > logs/mmbench_dev_uncertainty.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -256,8 +308,8 @@ import csv
 from pathlib import Path
 
 target_lambda = 0.05
-results_path = Path("outputs/pareto_vovnet/results.csv")
-dataset_name = "mmbench"
+results_path = Path("outputs/eval/ckpt_10000/mmbench_dev_pareto/results.csv")
+dataset_name = "mmbench_dev"
 
 ratio = None
 with results_path.open() as f:
@@ -293,13 +345,15 @@ with open("configs/baseline_random_matched.yaml", "w") as f:
 print("Wrote configs/baseline_random_matched.yaml with ratios", ratio)
 PY
 
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=6 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_random_matched.yaml \
-  --output_dir outputs/baseline_random_matched \
-  > logs/eval_baseline_random_matched.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_random_matched \
+  > logs/mmbench_dev_random_matched.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -331,25 +385,29 @@ policy:
   baseline_pruning_ratio: 0.50
   baseline_pruning_mode: "stride"
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=7 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/baseline_pruning_ratio_050.yaml \
-  --output_dir outputs/baseline_pruning_ratio_050 \
-  > logs/eval_baseline_pruning_ratio_050.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pruning_ratio_050 \
+  > logs/mmbench_dev_pruning_ratio_050.out 2>&1 &
 ```
 
 **Command (Pareto sweep, writes pareto_pruning.csv/json)**
 ```bash
-nohup python -m scripts.pareto_pruning \
+CUDA_VISIBLE_DEVICES=7 nohup python -m scripts.pareto_pruning \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
-  --output_dir outputs/pareto_pruning_stride \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pruning \
   --ratios 1.0 0.75 0.50 0.25 \
   --mode stride \
-  > logs/pareto_pruning_stride.out 2>&1 &
+  > logs/mmbench_dev_pruning.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -361,7 +419,163 @@ nohup python -m scripts.pareto_pruning \
 - `remaining_vision_tokens` scales roughly with pruning ratio.
 - Accuracy drops smoothly as pruning_ratio decreases.
 
+### B5. Token Merge + Prune Proxy
+**Purpose**: token merging (AIM-style) baseline without retraining.
+
+**Command (Pareto sweep)**
+```bash
+CUDA_VISIBLE_DEVICES=6 nohup python -m scripts.pareto_merge \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --merge_ratio_list "0.25,0.5,0.75,1.0" \
+  --merge_mode cosine --merge_weight norm \
+  --enable_prune false \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_merge \
+  > logs/mmbench_dev_merge.out 2>&1 &
+```
+
+**Expected outputs**
+- `pareto_merge.csv` + `pareto_merge.json` in the output dir.
+
+### B6. Resolution Scaling Proxy
+**Purpose**: FastVLM-style budget scaling baseline.
+
+**Command (Pareto sweep)**
+```bash
+CUDA_VISIBLE_DEVICES=5 nohup python -m scripts.pareto_resolution \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --vision_budget_list "224,336,448,560" \
+  --budget_mode long_side \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_resolution \
+  > logs/mmbench_dev_resolution.out 2>&1 &
+```
+
+### B7. Multi-Granularity Token Pooling Proxy
+**Purpose**: M3-style token granularity baseline.
+
+**Command (Pareto sweep)**
+```bash
+CUDA_VISIBLE_DEVICES=4 nohup python -m scripts.pareto_granularity \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --pooling_list "1,2,4" \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_granularity \
+  > logs/mmbench_dev_granularity.out 2>&1 &
+```
+
 ---
+
+## B8. 8-GPU Eval Command Pack (Text Answers)
+**Purpose**: run core evals in parallel, one job per GPU.
+
+**Notes**
+- All commands write logs into `logs/`.
+- Append `--config configs/eval_quick_200.yaml` if you only want 200 samples.
+- For lenient scoring (appendix), replace `configs/eval_mmbench_dev_text.yaml` with `configs/eval_mmbench_dev_text_fuzzy.yaml`.
+
+```bash
+# GPU0: VoVNet Pareto (main)
+CUDA_VISIBLE_DEVICES=0 nohup python -m scripts.eval \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pareto \
+  --pareto 0 0.01 0.02 0.05 0.1 \
+  > logs/mmbench_dev_pareto.out 2>&1 &
+
+# GPU1: Always-Full
+CUDA_VISIBLE_DEVICES=1 nohup python -m scripts.eval \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --config configs/baseline_always_full.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_always_full \
+  > logs/mmbench_dev_always_full.out 2>&1 &
+
+# GPU2: Always-Coarse
+CUDA_VISIBLE_DEVICES=2 nohup python -m scripts.eval \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --config configs/baseline_always_coarse.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_always_coarse \
+  > logs/mmbench_dev_always_coarse.out 2>&1 &
+
+# GPU3: No-Vision
+CUDA_VISIBLE_DEVICES=3 nohup python -m scripts.eval \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --config configs/baseline_no_vision.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_no_vision \
+  > logs/mmbench_dev_no_vision.out 2>&1 &
+
+# GPU4: Multi-Granularity
+CUDA_VISIBLE_DEVICES=4 nohup python -m scripts.pareto_granularity \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --pooling_list "1,2,4" \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_granularity \
+  > logs/mmbench_dev_granularity.out 2>&1 &
+
+# GPU5: Resolution Scaling
+CUDA_VISIBLE_DEVICES=5 nohup python -m scripts.pareto_resolution \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --vision_budget_list "224,336,448,560" \
+  --budget_mode long_side \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_resolution \
+  > logs/mmbench_dev_resolution.out 2>&1 &
+
+# GPU6: Token Merge
+CUDA_VISIBLE_DEVICES=6 nohup python -m scripts.pareto_merge \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --merge_ratio_list "0.25,0.5,0.75,1.0" \
+  --merge_mode cosine --merge_weight norm \
+  --enable_prune false \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_merge \
+  > logs/mmbench_dev_merge.out 2>&1 &
+
+# GPU7: Token Pruning
+CUDA_VISIBLE_DEVICES=7 nohup python -m scripts.pareto_pruning \
+  --config configs/base.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --ratios 1.0 0.75 0.50 0.25 \
+  --mode stride \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pruning \
+  > logs/mmbench_dev_pruning.out 2>&1 &
+```
 
 ## C. Generalization Evaluation (No Training on These) - **Must Do**
 
@@ -369,16 +583,19 @@ nohup python -m scripts.pareto_pruning \
 **Purpose**: show action shifts under strong visual vs OCR-heavy tasks.
 
 **Config**
-- Use `--dataset_config "mmbench,mmmu,textvqa"` (already includes MMBench test, MMMU validation, TextVQA validation).
+- Use `configs/eval_generalization_text.yaml` (MMBench dev text + MMMU text + TextVQA).
 
 **Command**
 ```bash
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=0,1,2 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config "mmbench,mmmu,textvqa" \
-  --output_dir outputs/generalization_vovnet \
-  > logs/eval_generalization_vovnet.out 2>&1 &
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_generalization_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/generalization_text \
+  --parallel --gpus 0,1,2 \
+  > logs/generalization_text.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -427,7 +644,7 @@ policy:
 YAML
 nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
   --config configs/ablate_soft_mixture.yaml \
   > logs/train_ddp_soft_mixture.out 2>&1 &
 ```
@@ -453,7 +670,7 @@ policy:
 YAML
 nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
   --config configs/ablate_lambda0.yaml \
   > logs/train_ddp_lambda0.out 2>&1 &
 ```
@@ -498,13 +715,15 @@ policy:
   fallback_mode: "full"
   fallback_entropy_threshold: 0.50
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=4 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/fallback_full.yaml \
-  --output_dir outputs/fallback_full \
-  > logs/eval_fallback_full.out 2>&1 &
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_fallback_full \
+  > logs/mmbench_dev_fallback_full.out 2>&1 &
 ```
 
 **Expected outputs**
@@ -542,30 +761,36 @@ cat > configs/profile_eval.yaml <<'YAML'
 eval:
   profile: true
 YAML
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=0 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/profile_eval.yaml \
-  --output_dir outputs/profile_vovnet \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/profile_vovnet \
   > logs/profile_vovnet.out 2>&1 &
 
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=1 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/profile_always_full \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/profile_always_full \
   > logs/profile_always_full.out 2>&1 &
 
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=2 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
   --config configs/profile_eval.yaml \
   --config configs/baseline_always_coarse.yaml \
-  --output_dir outputs/profile_always_coarse \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/profile_always_coarse \
   > logs/profile_always_coarse.out 2>&1 &
 ```
 
@@ -601,13 +826,13 @@ def load_rows(path):
 
 rows = []
 for path in [
-    "outputs/pareto_vovnet/results.csv",
-    "outputs/baseline_always_full/results.csv",
-    "outputs/baseline_always_coarse/results.csv",
-    "outputs/baseline_no_vision/results.csv",
-    "outputs/baseline_uncertainty_t0_50/results.csv",
-    "outputs/baseline_random_matched/results.csv",
-    "outputs/baseline_pruning_ratio_050/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_pareto/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_always_full/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_always_coarse/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_no_vision/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_uncertainty_t0_50/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_random_matched/results.csv",
+    "outputs/eval/ckpt_10000/mmbench_dev_pruning_ratio_050/results.csv",
 ]:
     if Path(path).exists():
         rows.extend(load_rows(path))
@@ -620,8 +845,8 @@ def write_csv(path, rows):
         writer.writeheader()
         writer.writerows(rows)
 
-# Pareto curve (MMBench only)
-pareto_rows = [r for r in rows if r.get("dataset") == "mmbench"]
+# Pareto curve (MMBench dev only)
+pareto_rows = [r for r in rows if r.get("dataset") == "mmbench_dev"]
 write_csv(out_dir / "pareto.csv", pareto_rows)
 
 # Action ratio summary
@@ -641,10 +866,7 @@ action_rows = [
 write_csv(out_dir / "action_ratio.csv", action_rows)
 
 # Main table (filter MMBench and key baselines)
-main_table = [
-    r for r in rows
-    if r.get("dataset") == "mmbench"
-]
+main_table = [r for r in rows if r.get("dataset") == "mmbench_dev"]
 write_csv(out_dir / "main_table.csv", main_table)
 print("Wrote", out_dir / "pareto.csv", out_dir / "action_ratio.csv", out_dir / "main_table.csv")
 PY
@@ -670,11 +892,12 @@ PY
 
 **Command**
 ```bash
-nohup python -m scripts.oracle_action \
+CUDA_VISIBLE_DEVICES=3 nohup python -m scripts.oracle_action \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
-  --output_dir outputs/oracle_action \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/oracle_action \
   --max_samples 200 \
   > logs/oracle_action.out 2>&1 &
 ```
@@ -696,39 +919,45 @@ nohup python -m scripts.oracle_action \
 ```bash
 nohup torchrun --nproc_per_node 8 scripts/train_ddp.py \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
   > logs/train_ddp_mvp.out 2>&1 &
 ```
 
 2) VoVNet Pareto (3 lambda points):
 ```bash
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=0 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
-  --output_dir outputs/pareto_vovnet_mvp \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_pareto_mvp \
   --pareto 0 0.05 0.1 \
-  > logs/eval_pareto_vovnet_mvp.out 2>&1 &
+  > logs/mmbench_dev_pareto_mvp.out 2>&1 &
 ```
 
 3) Fixed baselines (Always-Full + No-Vision):
 Note: requires `configs/baseline_always_full.yaml` and `configs/baseline_no_vision.yaml` from B1.
 ```bash
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=1 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
   --config configs/baseline_always_full.yaml \
-  --output_dir outputs/baseline_always_full_mvp \
-  > logs/eval_baseline_always_full_mvp.out 2>&1 &
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_always_full_mvp \
+  > logs/mmbench_dev_always_full_mvp.out 2>&1 &
 
-nohup python -m scripts.eval \
+CUDA_VISIBLE_DEVICES=2 nohup python -m scripts.eval \
   --config configs/base.yaml \
-  --config configs/train_mmbench_llava_textvqa.yaml \
-  --dataset_config mmbench \
+  --config configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml \
+  --config configs/eval_single_gpu.yaml \
+  --dataset_config configs/eval_mmbench_dev_text.yaml \
   --config configs/baseline_no_vision.yaml \
-  --output_dir outputs/baseline_no_vision_mvp \
-  > logs/eval_baseline_no_vision_mvp.out 2>&1 &
+  --checkpoint outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt \
+  --output_dir outputs/eval/ckpt_10000/mmbench_dev_no_vision_mvp \
+  > logs/mmbench_dev_no_vision_mvp.out 2>&1 &
 ```
 
 ---
@@ -737,7 +966,7 @@ nohup python -m scripts.eval \
 **Goal**: finalize all tables/figures with multi-seed stability and full sweeps.
 
 1) Train 2-3 seeds (same config, different `training.seed`).
-2) VoVNet Pareto sweep on MMBench test (A1) for all seeds.
+2) VoVNet Pareto sweep on MMBench dev (text answers, A1) for all seeds.
 3) Baseline sweeps: uncertainty thresholds + pruning ratios (B2/B4).
 4) Random matched baselines for key lambda points (B3).
 5) Generalization runs (C1).

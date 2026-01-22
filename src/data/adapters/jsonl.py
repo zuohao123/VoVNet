@@ -54,6 +54,11 @@ class JsonlVQADataset(Dataset):
         item = self.items[idx]
         question = str(item.get(self.text_field, ""))
         answer_value = item.get(self.answer_field)
+        answer_info = answer_value
+        if self.answer_field != "answer":
+            raw_answer = item.get("answer")
+            if isinstance(raw_answer, dict):
+                answer_info = raw_answer
         answer = self._resolve_answer(answer_value)
         context = item.get("context") or item.get("hint") or item.get("rationale")
         choices = item.get("choices") or item.get("options") or item.get("candidates")
@@ -64,7 +69,7 @@ class JsonlVQADataset(Dataset):
         return {
             "question": question,
             "answer": answer,
-            "answer_info": answer_value,
+            "answer_info": answer_info,
             "image": image,
             "context": context,
             "choices": choices,
