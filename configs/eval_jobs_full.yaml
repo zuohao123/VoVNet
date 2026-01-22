@@ -1,0 +1,219 @@
+env:
+  CFG_BASE: configs/base.yaml
+  CFG_TRAIN: configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml
+  EVAL_SINGLE: configs/eval_single_gpu.yaml
+  MMBENCH_DATASET_EXACT: configs/eval_mmbench_dev_text.yaml
+  MMBENCH_DATASET_FUZZY: configs/eval_mmbench_dev_text_fuzzy.yaml
+  CKPT: outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt
+jobs:
+  - name: mmbench_policy_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_policy_exact
+    output_dir: outputs/eval/full/mmbench_dev_policy_exact
+    log: logs/full/mmbench_dev_policy_exact.out
+
+  - name: mmbench_policy_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_policy_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_policy_fuzzy
+    log: logs/full/mmbench_dev_policy_fuzzy.out
+
+  - name: mmbench_full_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_full_exact
+    output_dir: outputs/eval/full/mmbench_dev_full_exact
+    log: logs/full/mmbench_dev_full_exact.out
+
+  - name: mmbench_full_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_full_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_full_fuzzy
+    log: logs/full/mmbench_dev_full_fuzzy.out
+
+  - name: mmbench_coarse_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_coarse_exact
+    output_dir: outputs/eval/full/mmbench_dev_coarse_exact
+    log: logs/full/mmbench_dev_coarse_exact.out
+
+  - name: mmbench_coarse_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_coarse_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_coarse_fuzzy
+    log: logs/full/mmbench_dev_coarse_fuzzy.out
+
+  - name: mmbench_no_vision_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_no_vision_exact
+    output_dir: outputs/eval/full/mmbench_dev_no_vision_exact
+    log: logs/full/mmbench_dev_no_vision_exact.out
+
+  - name: mmbench_no_vision_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_no_vision_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_no_vision_fuzzy
+    log: logs/full/mmbench_dev_no_vision_fuzzy.out
+
+  - name: mmbench_random_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_random_exact
+    output_dir: outputs/eval/full/mmbench_dev_random_exact
+    log: logs/full/mmbench_dev_random_exact.out
+
+  - name: mmbench_random_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_random_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_random_fuzzy
+    log: logs/full/mmbench_dev_random_fuzzy.out
+
+  - name: mmbench_resolution_exact
+    cmd: >-
+      python -m scripts.pareto_resolution
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --vision_budget_list 224,336,448
+      --output_dir outputs/eval/full/mmbench_dev_resolution_exact
+    output_dir: outputs/eval/full/mmbench_dev_resolution_exact
+    log: logs/full/mmbench_dev_resolution_exact.out
+
+  - name: mmbench_resolution_fuzzy
+    cmd: >-
+      python -m scripts.pareto_resolution
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --vision_budget_list 224,336,448
+      --output_dir outputs/eval/full/mmbench_dev_resolution_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_resolution_fuzzy
+    log: logs/full/mmbench_dev_resolution_fuzzy.out
+
+  - name: mmbench_pruning_exact
+    cmd: >-
+      python -m scripts.pareto_pruning
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --ratios 1.0 0.75 0.5 0.25
+      --mode stride
+      --output_dir outputs/eval/full/mmbench_dev_pruning_exact
+    output_dir: outputs/eval/full/mmbench_dev_pruning_exact
+    log: logs/full/mmbench_dev_pruning_exact.out
+
+  - name: mmbench_pruning_fuzzy
+    cmd: >-
+      python -m scripts.pareto_pruning
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --ratios 1.0 0.75 0.5 0.25
+      --mode stride
+      --output_dir outputs/eval/full/mmbench_dev_pruning_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_pruning_fuzzy
+    log: logs/full/mmbench_dev_pruning_fuzzy.out
+
+  - name: mmbench_merge_exact
+    cmd: >-
+      python -m scripts.pareto_merge
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --merge_ratio_list 0.25,0.5,0.75,1.0
+      --merge_mode cosine --merge_weight norm
+      --enable_prune false
+      --output_dir outputs/eval/full/mmbench_dev_merge_exact
+    output_dir: outputs/eval/full/mmbench_dev_merge_exact
+    log: logs/full/mmbench_dev_merge_exact.out
+
+  - name: mmbench_merge_fuzzy
+    cmd: >-
+      python -m scripts.pareto_merge
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --merge_ratio_list 0.25,0.5,0.75,1.0
+      --merge_mode cosine --merge_weight norm
+      --enable_prune false
+      --output_dir outputs/eval/full/mmbench_dev_merge_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_merge_fuzzy
+    log: logs/full/mmbench_dev_merge_fuzzy.out
+
+  - name: mmbench_granularity_exact
+    cmd: >-
+      python -m scripts.pareto_granularity
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --pooling_list 1,2,4
+      --output_dir outputs/eval/full/mmbench_dev_granularity_exact
+    output_dir: outputs/eval/full/mmbench_dev_granularity_exact
+    log: logs/full/mmbench_dev_granularity_exact.out
+
+  - name: mmbench_granularity_fuzzy
+    cmd: >-
+      python -m scripts.pareto_granularity
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --pooling_list 1,2,4
+      --output_dir outputs/eval/full/mmbench_dev_granularity_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_granularity_fuzzy
+    log: logs/full/mmbench_dev_granularity_fuzzy.out
