@@ -119,6 +119,35 @@ def _move_batch_to_device(batch: Dict[str, Any], device: torch.device) -> Dict[s
     return batch
 
 
+def _align_grid_to_token_counts(
+    image_grid_thw: Optional[torch.Tensor],
+    token_counts: torch.Tensor,
+) -> tuple[Optional[torch.Tensor], torch.Tensor]:
+    if image_grid_thw is None or not torch.is_tensor(image_grid_thw):
+        return image_grid_thw, token_counts
+    device = token_counts.device
+    grid = image_grid_thw.to(device=device, dtype=torch.long)
+    token_counts = token_counts.to(device=device, dtype=torch.long).clamp(min=1)
+    if grid.ndim != 2 or grid.size(-1) != 3:
+        return image_grid_thw, token_counts
+    new_grid = grid.clone()
+    new_counts = token_counts.clone()
+    for i in range(grid.size(0)):
+        t = int(grid[i, 0].item())
+        t = max(t, 1)
+        target = int(token_counts[i].item())
+        target_hw = max(1, (target + t - 1) // t)
+        h = int(target_hw ** 0.5)
+        while h > 1 and target_hw % h != 0:
+            h -= 1
+        w = max(1, target_hw // max(h, 1))
+        new_grid[i, 0] = t
+        new_grid[i, 1] = max(1, h)
+        new_grid[i, 2] = max(1, w)
+        new_counts[i] = t * new_grid[i, 1] * new_grid[i, 2]
+    return new_grid, new_counts
+
+
 def _forward_with_cost(
     model: VoVNet,
     batch: Dict[str, Any],
@@ -304,20 +333,6 @@ def _forward_with_vision_token_pruning_proxy(
     full_inputs.input_ids = pruned_inputs.input_ids
     full_inputs.attention_mask = pruned_inputs.attention_mask
     full_inputs.labels = pruned_inputs.labels
-    if full_inputs.image_grid_thw is not None and isinstance(full_inputs.image_grid_thw, torch.Tensor):
-        grid = full_inputs.image_grid_thw.to(device=keep_counts.device)
-        t = grid[:, 0].clamp(min=1)
-        h = grid[:, 1].clamp(min=1)
-        w = grid[:, 2].clamp(min=1)
-        orig_tokens = (t * h * w).clamp(min=1)
-        ratio = keep_counts.float() / orig_tokens.float()
-        scale = torch.sqrt(torch.clamp(ratio, min=1e-6))
-        new_h = torch.clamp((h.float() * scale).round().long(), min=1)
-        new_w = torch.clamp((w.float() * scale).round().long(), min=1)
-        new_tokens = (t * new_h * new_w).clamp(min=1)
-        keep_counts = new_tokens.to(dtype=torch.long)
-        full_inputs.image_grid_thw = torch.stack([t, new_h, new_w], dim=-1)
-        pruned_inputs.token_counts = keep_counts
     full_inputs.token_counts = keep_counts
 
     pruning_spec = VisionPruningSpec(
