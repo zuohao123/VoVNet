@@ -1,0 +1,10 @@
+defaults:
+  prompt_template: "Question: {question}\nContext: {context}\nOptions:\n{choices}\nAnswer (letter only):"
+  metric: "multi_choice"
+  text_field: "question"
+  answer_field: "answer"
+  image_field: "image"
+datasets:
+  - name: "mmmu"
+    source: "jsonl"
+    jsonl: "data/processed/mmmu/mmmu_validation.jsonl"
