@@ -304,6 +304,20 @@ def _forward_with_vision_token_pruning_proxy(
     full_inputs.input_ids = pruned_inputs.input_ids
     full_inputs.attention_mask = pruned_inputs.attention_mask
     full_inputs.labels = pruned_inputs.labels
+    if full_inputs.image_grid_thw is not None and isinstance(full_inputs.image_grid_thw, torch.Tensor):
+        grid = full_inputs.image_grid_thw.to(device=keep_counts.device)
+        t = grid[:, 0].clamp(min=1)
+        h = grid[:, 1].clamp(min=1)
+        w = grid[:, 2].clamp(min=1)
+        orig_tokens = (t * h * w).clamp(min=1)
+        ratio = keep_counts.float() / orig_tokens.float()
+        scale = torch.sqrt(torch.clamp(ratio, min=1e-6))
+        new_h = torch.clamp((h.float() * scale).round().long(), min=1)
+        new_w = torch.clamp((w.float() * scale).round().long(), min=1)
+        new_tokens = (t * new_h * new_w).clamp(min=1)
+        keep_counts = new_tokens.to(dtype=torch.long)
+        full_inputs.image_grid_thw = torch.stack([t, new_h, new_w], dim=-1)
+        pruned_inputs.token_counts = keep_counts
     full_inputs.token_counts = keep_counts
 
     pruning_spec = VisionPruningSpec(

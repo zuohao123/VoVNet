@@ -22,6 +22,10 @@ def _normalize_vqa(text: str) -> str:
     return " ".join(text.split())
 
 
+def _normalize_choice(text: str) -> str:
+    return _normalize_vqa(text)
+
+
 def _coerce_ref_text(ref: object) -> str:
     if isinstance(ref, dict):
         for key in ("text", "answer", "label"):
@@ -85,7 +89,16 @@ def _extract_choice_letter(text: str) -> Optional[str]:
         return token
     if token.isdigit():
         return _label_to_letter(token)
-    match = re.search(r"\b([a-h])\b", normalized)
+    match = re.search(r"\(([a-h])\)", normalized)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b([a-h])[\.\)]", normalized)
+    if match:
+        return match.group(1)
+    match = re.search(
+        r"\b(?:option|choice|answer|ans|答案)\b\s*[:\-\s]*([a-h])\b",
+        normalized,
+    )
     if match:
         return match.group(1)
     return None
@@ -146,21 +159,29 @@ def multi_choice_accuracy(preds: Iterable[str], refs: Iterable[object]) -> float
         pred_norm = normalize_text(pred)
         pred_letter = _extract_choice_letter(pred)
         candidates = _extract_answer_list(ref)
-        normalized = {normalize_text(item) for item in candidates if item not in (None, "")}
+        normalized = {
+            _normalize_choice(item) for item in candidates if item not in (None, "")
+        }
         label_letter = None
         if isinstance(ref, dict):
             label_letter = _label_to_letter(ref.get("label"))
         candidate_letters = {label_letter} if label_letter else set()
-        for cand in normalized:
+        for cand in candidates:
             letter = _extract_choice_letter(cand)
             if letter:
                 candidate_letters.add(letter)
         if pred_letter and pred_letter in candidate_letters:
             correct += 1
             continue
+        pred_norm = _normalize_choice(pred)
         if pred_norm in normalized:
             correct += 1
             continue
+        if pred_norm:
+            for cand in normalized:
+                if cand and (pred_norm in cand or cand in pred_norm):
+                    correct += 1
+                    break
     return correct / len(preds)
 
 
