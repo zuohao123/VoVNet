@@ -62,7 +62,21 @@ class VLMDataCollator:
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         questions = [item.get("question", "") for item in batch]
-        answers = [item.get("answer", "") for item in batch]
+        answer_texts = [item.get("answer", "") for item in batch]
+        answer_refs = []
+        for item, answer_text in zip(batch, answer_texts):
+            ref = item.get("answer_info")
+            if isinstance(ref, dict):
+                merged = dict(ref)
+                choices = item.get("choices")
+                if choices is not None and "choices" not in merged:
+                    merged["choices"] = choices
+                if "text" not in merged and answer_text not in (None, ""):
+                    merged["text"] = answer_text
+                ref = merged
+            elif ref is None:
+                ref = answer_text
+            answer_refs.append(ref)
         image_token = _get_image_token(self.tokenizer)
         prompts = []
         for item, q in zip(batch, questions):
@@ -80,7 +94,7 @@ class VLMDataCollator:
             if image_token and image_token not in prompt:
                 prompt = f"{image_token}\n{prompt}".strip()
             prompts.append(prompt)
-        full_texts = [f"{p} {a}".strip() for p, a in zip(prompts, answers)]
+        full_texts = [f"{p} {a}".strip() for p, a in zip(prompts, answer_texts)]
 
         encoded = self.tokenizer(
             full_texts,
@@ -113,6 +127,6 @@ class VLMDataCollator:
             "labels": labels,
             "images": images,
             "questions": questions,
-            "answers": answers,
+            "answers": answer_refs,
             "meta": [item.get("meta", {}) for item in batch],
         }

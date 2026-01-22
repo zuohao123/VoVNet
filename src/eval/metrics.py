@@ -94,6 +94,18 @@ def _extract_choice_letter(text: str) -> Optional[str]:
 def _extract_answer_list(ref: object) -> List[str]:
     answers: List[str] = []
     if isinstance(ref, dict):
+        choices = ref.get("choices")
+        label = ref.get("label")
+        if choices and label is not None:
+            try:
+                idx = int(label)
+            except Exception:
+                idx = None
+            if idx is not None and isinstance(choices, list):
+                if 0 <= idx < len(choices):
+                    answers.append(str(choices[idx]))
+                elif 1 <= idx <= len(choices):
+                    answers.append(str(choices[idx - 1]))
         raw = ref.get("raw")
         if isinstance(raw, list):
             for item in raw:
@@ -110,6 +122,9 @@ def _extract_answer_list(ref: object) -> List[str]:
         aliases = ref.get("aliases")
         if isinstance(aliases, list) and aliases:
             return [str(a) for a in aliases if a not in (None, "")]
+        answer_text = ref.get("answer")
+        if answer_text not in (None, ""):
+            return [str(answer_text)]
         text = ref.get("text")
         if text not in (None, ""):
             return [str(text)]
