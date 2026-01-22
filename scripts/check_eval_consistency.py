@@ -73,6 +73,10 @@ def _signature(record: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
     return {field: record.get(field) for field in fields}
 
 
+def _signature_tuple(record: Dict[str, Any], fields: List[str]) -> tuple[Any, ...]:
+    return tuple(record.get(field) for field in fields)
+
+
 def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
@@ -129,11 +133,18 @@ def main() -> None:
     ]
 
     mismatches: List[Dict[str, Any]] = []
+    expected_by_dataset: Dict[str, Dict[str, Any]] = {}
     for dataset, items in grouped.items():
         if not items:
             continue
-        reference = _signature(items[0], signature_fields)
-        for item in items[1:]:
+        counts: Dict[tuple[Any, ...], int] = {}
+        for item in items:
+            key = _signature_tuple(item, signature_fields)
+            counts[key] = counts.get(key, 0) + 1
+        expected_tuple = max(counts.items(), key=lambda pair: pair[1])[0]
+        reference = dict(zip(signature_fields, expected_tuple))
+        expected_by_dataset[dataset] = reference
+        for item in items:
             candidate = _signature(item, signature_fields)
             diffs = {
                 key: {"expected": reference.get(key), "actual": candidate.get(key)}
@@ -156,6 +167,7 @@ def main() -> None:
         "datasets_checked": sorted(grouped.keys()),
         "total_runs": len(records),
         "mismatch_count": len(mismatches),
+        "expected_signatures": expected_by_dataset,
         "mismatches": mismatches,
     }
     output_path = Path(args.output)
