@@ -598,6 +598,8 @@ class BaseVLM(nn.Module):
             yield
             return
         target = self.model
+
+        # Patch top-level get_image_features if present.
         get_features = getattr(target, "get_image_features", None)
         if get_features is not None:
             original = get_features
@@ -612,7 +614,27 @@ class BaseVLM(nn.Module):
                 setattr(target, "get_image_features", original)
             return
 
+        # Patch nested model.get_image_features if needed.
+        inner = getattr(target, "model", None)
+        if inner is not None:
+            get_features = getattr(inner, "get_image_features", None)
+            if get_features is not None:
+                original = get_features
+
+                def patched(*args: Any, **kwargs: Any):
+                    return self._apply_pruning(original(*args, **kwargs), spec)
+
+                setattr(inner, "get_image_features", patched)
+                try:
+                    yield
+                finally:
+                    setattr(inner, "get_image_features", original)
+                return
+
+        # Fallback: patch visual.forward (top-level or nested).
         visual = getattr(target, "visual", None)
+        if visual is None and inner is not None:
+            visual = getattr(inner, "visual", None)
         if visual is None or not hasattr(visual, "forward"):
             yield
             return
