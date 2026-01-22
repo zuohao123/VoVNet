@@ -589,6 +589,23 @@ class BaseVLM(nn.Module):
             return (pruned_embeds, pruned_deepstack, *outputs[2:])
         return outputs
 
+    def _iter_pruning_targets(self, root: Any):
+        queue = [root]
+        seen = set()
+        while queue:
+            obj = queue.pop(0)
+            if obj is None:
+                continue
+            obj_id = id(obj)
+            if obj_id in seen:
+                continue
+            seen.add(obj_id)
+            yield obj
+            for attr in ("model", "base_model"):
+                child = getattr(obj, attr, None)
+                if child is not None and child is not obj:
+                    queue.append(child)
+
     @contextmanager
     def _vision_pruning(self, spec: Optional[VisionPruningSpec]):
         if spec is None:
@@ -599,55 +616,41 @@ class BaseVLM(nn.Module):
             return
         target = self.model
 
-        # Patch top-level get_image_features if present.
-        get_features = getattr(target, "get_image_features", None)
-        if get_features is not None:
+        # Patch any reachable get_image_features (handles PEFT/base wrappers).
+        for obj in self._iter_pruning_targets(target):
+            get_features = getattr(obj, "get_image_features", None)
+            if get_features is None:
+                continue
             original = get_features
 
             def patched(*args: Any, **kwargs: Any):
                 return self._apply_pruning(original(*args, **kwargs), spec)
 
-            setattr(target, "get_image_features", patched)
+            setattr(obj, "get_image_features", patched)
             try:
                 yield
             finally:
-                setattr(target, "get_image_features", original)
+                setattr(obj, "get_image_features", original)
             return
-
-        # Patch nested model.get_image_features if needed.
-        inner = getattr(target, "model", None)
-        if inner is not None:
-            get_features = getattr(inner, "get_image_features", None)
-            if get_features is not None:
-                original = get_features
-
-                def patched(*args: Any, **kwargs: Any):
-                    return self._apply_pruning(original(*args, **kwargs), spec)
-
-                setattr(inner, "get_image_features", patched)
-                try:
-                    yield
-                finally:
-                    setattr(inner, "get_image_features", original)
-                return
 
         # Fallback: patch visual.forward (top-level or nested).
-        visual = getattr(target, "visual", None)
-        if visual is None and inner is not None:
-            visual = getattr(inner, "visual", None)
-        if visual is None or not hasattr(visual, "forward"):
-            yield
+        for obj in self._iter_pruning_targets(target):
+            visual = getattr(obj, "visual", None)
+            if visual is None or not hasattr(visual, "forward"):
+                continue
+            original_forward = visual.forward
+
+            def patched_forward(*args: Any, **kwargs: Any):
+                return self._apply_pruning(original_forward(*args, **kwargs), spec)
+
+            visual.forward = patched_forward
+            try:
+                yield
+            finally:
+                visual.forward = original_forward
             return
-        original_forward = visual.forward
 
-        def patched_forward(*args: Any, **kwargs: Any):
-            return self._apply_pruning(original_forward(*args, **kwargs), spec)
-
-        visual.forward = patched_forward
-        try:
-            yield
-        finally:
-            visual.forward = original_forward
+        yield
 
     def freeze_vision_encoder(self) -> None:
         """Freeze vision-related parameters by name heuristic."""
