@@ -1,0 +1,4 @@
+policy:
+  baseline_name: random_policy_matched
+  baseline_target_ratios: [0.33, 0.33, 0.34]
+  baseline_seed: 0

@@ -1,0 +1,148 @@
+env:
+  CFG_BASE: configs/base.yaml
+  CFG_TRAIN: configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml
+  EVAL_SINGLE: configs/eval_single_gpu.yaml
+  EVAL_QUICK: configs/eval_quick_200.yaml
+  CKPT: outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt
+jobs:
+  - name: mmbench_dev_pareto
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --pareto 0 0.01 0.02 0.05 0.1
+      --output_dir outputs/eval/quick_200/mmbench_dev_pareto
+    output_dir: outputs/eval/quick_200/mmbench_dev_pareto
+    log: logs/mmbench_dev_pareto_200.out
+
+  - name: mmbench_dev_always_full
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/mmbench_dev_always_full
+    output_dir: outputs/eval/quick_200/mmbench_dev_always_full
+    log: logs/mmbench_dev_always_full_200.out
+
+  - name: mmbench_dev_always_coarse
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/mmbench_dev_always_coarse
+    output_dir: outputs/eval/quick_200/mmbench_dev_always_coarse
+    log: logs/mmbench_dev_always_coarse_200.out
+
+  - name: mmbench_dev_no_vision
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/mmbench_dev_no_vision
+    output_dir: outputs/eval/quick_200/mmbench_dev_no_vision
+    log: logs/mmbench_dev_no_vision_200.out
+
+  - name: mmbench_dev_uncertainty
+    cmd: >-
+      python -m scripts.pareto_threshold
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
+      --uncertainty entropy --vision full
+      --output_dir outputs/eval/quick_200/mmbench_dev_uncertainty
+    output_dir: outputs/eval/quick_200/mmbench_dev_uncertainty
+    log: logs/mmbench_dev_uncertainty_200.out
+
+  - name: mmbench_dev_random_matched
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/mmbench_dev_random_matched
+    output_dir: outputs/eval/quick_200/mmbench_dev_random_matched
+    log: logs/mmbench_dev_random_matched_200.out
+
+  - name: mmbench_dev_pruning
+    cmd: >-
+      python -m scripts.pareto_pruning
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --ratios 1.0 0.75 0.50 0.25
+      --mode stride
+      --output_dir outputs/eval/quick_200/mmbench_dev_pruning
+    output_dir: outputs/eval/quick_200/mmbench_dev_pruning
+    log: logs/mmbench_dev_pruning_200.out
+
+  - name: mmbench_dev_merge
+    cmd: >-
+      python -m scripts.pareto_merge
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --merge_ratio_list 0.25,0.5,0.75,1.0
+      --merge_mode cosine --merge_weight norm
+      --enable_prune false
+      --output_dir outputs/eval/quick_200/mmbench_dev_merge
+    output_dir: outputs/eval/quick_200/mmbench_dev_merge
+    log: logs/mmbench_dev_merge_200.out
+
+  - name: mmbench_dev_resolution
+    cmd: >-
+      python -m scripts.pareto_resolution
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --vision_budget_list 224,336,448
+      --output_dir outputs/eval/quick_200/mmbench_dev_resolution
+    output_dir: outputs/eval/quick_200/mmbench_dev_resolution
+    log: logs/mmbench_dev_resolution_200.out
+
+  - name: mmbench_dev_granularity
+    cmd: >-
+      python -m scripts.pareto_granularity
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmbench_dev_text.yaml
+      --checkpoint $CKPT
+      --pooling_list 1,2,4
+      --output_dir outputs/eval/quick_200/mmbench_dev_granularity
+    output_dir: outputs/eval/quick_200/mmbench_dev_granularity
+    log: logs/mmbench_dev_granularity_200.out
+
+  - name: mmmu_policy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_mmmu_text.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/mmmu_policy
+    output_dir: outputs/eval/quick_200/mmmu_policy
+    log: logs/mmmu_policy_200.out
+
+  - name: textvqa_policy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_QUICK
+      --dataset_config configs/eval_textvqa.yaml
+      --checkpoint $CKPT
+      --output_dir outputs/eval/quick_200/textvqa_policy
+    output_dir: outputs/eval/quick_200/textvqa_policy
+    log: logs/textvqa_policy_200.out

@@ -141,6 +141,16 @@ def load_dataset_specs(path: str | None, cfg: Config) -> List[EvalDatasetSpec]:
         specs: List[EvalDatasetSpec] = []
         for item in datasets:
             merged = {**defaults, **(item or {})}
+            if merged.get("prompt_template") is None:
+                merged["prompt_template"] = cfg.data.prompt_template
+            if merged.get("text_field") is None:
+                merged["text_field"] = cfg.data.text_field
+            if merged.get("answer_field") is None:
+                merged["answer_field"] = cfg.data.answer_field
+            if merged.get("image_field") is None:
+                merged["image_field"] = cfg.data.image_field
+            if merged.get("max_samples") is None:
+                merged["max_samples"] = cfg.data.max_samples
             specs.append(EvalDatasetSpec(**merged))
         if not specs:
             raise ValueError("dataset_config contains no datasets")

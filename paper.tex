@@ -1,0 +1,691 @@
+%%%%%%%%%%%%%%% ICML 2026 PAPER (FILLED SKELETON + PARTIAL WRITE-UP) %%%%%%%%%%%%%%%
+\documentclass{article}
+
+% Recommended, but optional, packages for figures and better typesetting:
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+
+\usepackage{hyperref}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% ICML 2026 style (blind submission):
+\usepackage{icml2026}
+% For preprint:
+% \usepackage[preprint]{icml2026}
+% For camera-ready:
+% \usepackage[accepted]{icml2026}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+\usepackage[capitalize,noabbrev]{cleveref}
+
+% Optional (remove if you don't use algorithms):
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% COMMANDS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newcommand{\method}{VoVNet}
+\newcommand{\vov}{Value-of-Vision}
+\newcommand{\no}{\textsc{No-Vision}}
+\newcommand{\coarse}{\textsc{Coarse-Vision}}
+\newcommand{\full}{\textsc{Full-Vision}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\softmax}{\mathrm{softmax}}
+
+% Short form for running title:
+\icmltitlerunning{Value-of-Vision for Cost-Aware Multimodal Reasoning}
+
+
+\begin{document}
+
+\twocolumn[
+\icmltitle{Value-of-Vision: Cost-Aware Selective Vision Invocation for Efficient Multimodal Reasoning}
+
+
+% Anonymous author list for blind submission:
+\begin{icmlauthorlist}
+  \icmlauthor{Anonymous Author(s)}{anon}
+\end{icmlauthorlist}
+\icmlaffiliation{anon}{Anonymous Institution, Anonymous City, Anonymous Country}
+\icmlcorrespondingauthor{Anonymous Author(s)}{anonymous@anonymous.com}
+
+\icmlkeywords{Multimodal Learning, Vision-Language Models, Adaptive Computation, Efficient Inference, Cost-Aware Decision}
+
+\vskip 0.3in
+]
+
+\printAffiliationsAndNotice{}  % required
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ABSTRACT
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+Vision-language models (VLMs) typically invoke vision whenever an image is present, even when the answer is recoverable from text alone.
+This unconditional vision usage wastes compute and increases latency.
+We propose \method, a cost-aware inference framework that estimates the per-instance value of vision and chooses among discrete visual budgets:
+skip vision, invoke a coarse budget, or allocate full vision.
+The policy is trained end-to-end with an explicit accuracy--cost objective and optional gain supervision, yielding controllable Pareto trade-offs.
+We evaluate on MMBench, MMMU, and TextVQA under a unified accuracy--cost protocol (consistent prompts/decoding/cost accounting),
+analyze action ratios and system profiling, and compare against fixed-budget, threshold-based, random-matched, and token-reduction baselines.
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 1. INTRODUCTION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+\label{sec:intro}
+
+Large vision-language models (VLMs) such as Flamingo, BLIP-2, PaLI, LLaVA, and Qwen-VL~\cite{alayrac2022flamingo,li2023blip2,chen2022pali,liu2023llava,bai2023qwenvl} have become a standard interface for multimodal reasoning, but their inference pipelines are often \emph{compute-oblivious}:
+the vision encoder is invoked whenever an image is present, regardless of whether the question actually requires visual evidence.
+In practical deployments, this ``always-look'' behavior is costly.
+Vision encoding can dominate latency, constrain batch size due to memory pressure, and reduce throughput---especially when image resolution or visual token count is high.
+
+At the same time, many real-world queries are \emph{vision-redundant}.
+For example, the instruction may be answerable by commonsense or by text in the prompt; the image may be irrelevant or provide only marginal benefit.
+Conversely, other queries are \emph{vision-critical}, requiring fine-grained perception or OCR.
+These observations suggest that the \emph{marginal value of invoking vision} varies significantly across instances.
+A uniform vision policy wastes compute on low-value instances and may under-allocate compute to high-value instances if budgets are constrained.
+
+\paragraph{Problem.}
+We study \emph{cost-aware vision invocation}: given an input $(x, I)$, decide (i) whether to use visual features at all, and (ii) if so, what visual budget to allocate, while optimizing an explicit accuracy--cost trade-off.
+This differs from token reduction methods that assume vision is always encoded and reduce computation \emph{after} visual features are obtained.
+
+\paragraph{Approach.}
+We propose \method, a text-first inference framework.
+\method first performs a lightweight text-only forward pass over the prompt (no visual tokens and no decoding), producing language representations and uncertainty signals.
+A small policy head then estimates \vov and chooses one of three discrete actions:
+\no\ (skip vision), \coarse\ (low-budget vision), or \full\ (high-budget vision).
+Training minimizes task loss plus an expected cost penalty, enabling controllable Pareto frontiers.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item We formulate \vov as a discrete action selection problem for VLM inference with interpretable budgets (\no/\coarse/\full).
+  \item We introduce a practical text-first framework that learns an explicit accuracy--cost trade-off by penalizing expected visual cost.
+  \item We provide an evaluation protocol and baseline suite emphasizing Pareto curves, action distributions, cost/latency profiling, generalization, and reliability analyses for selective vision usage.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 2. RELATED WORK
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Related Work}
+\label{sec:related}
+
+We review prior work on efficient vision-language model (VLM) inference from four complementary perspectives:
+(i) efficient vision encoding and resolution scaling,
+(ii) visual token reduction within the language model (pruning/merging/scheduling),
+(iii) adaptive and conditional computation (early exit / routing),
+and (iv) uncertainty-aware selective prediction.
+We position our approach as addressing a distinct but orthogonal question:
+\emph{whether visual information should be invoked at all, and at what budget, on a per-instance basis}.
+
+\subsection{Vision-Language Models and Instruction Tuning}
+
+Modern VLMs combine a vision encoder with a large language model, enabling image-conditioned generation and reasoning.
+Representative systems include Flamingo~\cite{alayrac2022flamingo}, BLIP-2~\cite{li2023blip2}, PaLI~\cite{chen2022pali}, Qwen-VL~\cite{bai2023qwenvl}, and LLaVA~\cite{liu2023llava}.
+Instruction tuning on multimodal data further improves alignment and usability, but these models typically treat vision as mandatory whenever an image is present.
+Our work is orthogonal to backbone design and instruction tuning: we retain the same VLM and focus on deciding when to invoke vision and at what budget.
+
+\subsection{Efficient Vision Encoding and Resolution Scaling}
+
+A representative line of research improves efficiency by optimizing the vision encoder and its interaction with image resolution.
+FastVLM~\cite{vasu2025fastvlm} studies the resolution--latency--accuracy trade-off in VLMs and proposes a hybrid vision encoder that reduces both encoding latency and the number of visual tokens produced at high resolution, yielding improved time-to-first-token without relying on downstream token pruning.
+Such encoder-side optimizations are complementary to our work: even with an efficient encoder, unnecessary vision invocation remains wasteful when the input is vision-redundant.
+
+\subsection{Visual Token Reduction in VLMs: Pruning, Merging, and Scheduling}
+
+Another major direction reduces compute by shrinking the number of visual tokens processed by the language model once vision is invoked.
+Recent methods perform instance-adaptive pruning across layers, either with lightweight learned modules or training-free heuristics.
+ATP-LLaVA~\cite{ye2025atpllava} introduces an adaptive token pruning module to determine instance- and layer-specific pruning ratios, while FitPrune~\cite{ye2025fitprune} derives a pruning recipe from attention statistics in a training-free manner to meet a user-specified budget.
+
+Beyond pure pruning, token merging and deduplication have emerged as strong training-free techniques.
+AIM~\cite{zhong2025aim} combines iterative token merging based on embedding similarity (before the LLM) with progressive token pruning inside LLM layers to realize a wide range of accuracy--efficiency trade-offs.
+Relatedly, VisPruner~\cite{zhang2025vispruner} argues that text-visual attention is not a reliable pruning signal and proposes a plug-and-play approach leveraging visual cues and similarity-based duplicate removal for more effective pruning.
+
+Multi-granularity representations provide another axis of efficiency.
+Matryoshka Multimodal Models (M3)~\cite{chen2024m3} propose nested multimodal representations that can be truncated at different granularities to trade representational fidelity for computation.
+
+Despite their effectiveness, these token-reduction methods largely share a common assumption:
+\emph{visual processing is always performed whenever an image is present}, and efficiency is achieved by optimizing \emph{how} visual information is processed after it has already been encoded.
+In contrast, our work addresses an earlier and complementary decision:
+\emph{whether visual information is worth invoking at all for a given input, and if so, what visual budget is appropriate}.
+Our approach is therefore orthogonal to token reduction and can be combined with pruning/merging techniques.
+
+\subsection{Adaptive Computation and Conditional Inference}
+
+Adaptive computation reduces inference cost by allocating computation based on input difficulty.
+Early-exit and conditional routing enable models to terminate inference early or skip computation for easy examples.
+Classic early-exit architectures (e.g., BranchyNet~\cite{teerapittayanon2017branchynet}) and language-model early exit (e.g., DeeBERT~\cite{xin2020deebert}) demonstrate that a substantial portion of compute can be avoided without degrading performance on easy instances.
+
+Recent system-level acceleration extends these ideas to large multimodal models.
+TwigVLM~\cite{shao2025twigvlm} accelerates large VLMs by combining twig-guided token pruning during prefilling with speculative decoding during generation, highlighting that end-to-end speedups require optimizing both prefilling and decoding.
+
+These approaches primarily adapt \emph{how much computation is performed within a fixed multimodal pipeline}.
+By contrast, our work introduces conditional computation at the modality level:
+the model first reasons over text alone, then decides whether and how to invoke costly cross-modal processing.
+This form of conditional inference is particularly well-suited to multimodal settings where many queries are vision-redundant.
+
+\subsection{Uncertainty-Aware Selective Prediction}
+
+Uncertainty estimation has long been used to guide selective prediction, abstention, and deferred decision-making.
+Selective classification~\cite{geifman2017selective} formalizes the accuracy--coverage trade-off, and uncertainty measures such as predictive entropy or probability margins are widely used to decide when to abstain or request additional information.
+In multimodal contexts, uncertainty is often used heuristically to decide when auxiliary modalities should be consulted.
+
+Our approach builds on this intuition but differs in two key aspects.
+First, uncertainty signals are used as part of a learned policy rather than a fixed thresholding rule.
+Second, the policy is trained end-to-end with an explicit cost-aware objective, optimizing an accuracy--cost trade-off rather than accuracy alone.
+This enables nuanced decisions that depend jointly on textual semantics and uncertainty, rather than relying on a single scalar criterion.
+
+\subsection{Summary}
+
+In summary, prior work on efficient VLM inference primarily answers the question:
+\emph{``How can visual processing be made cheaper once it is invoked?''}
+Our work instead asks:
+\emph{``When should visual processing be invoked, and at what budget?''}
+By framing vision usage as a discrete action-selection problem and explicitly optimizing expected visual cost, our approach complements existing efficiency techniques.
+This perspective motivates comparisons against resolution scaling, token pruning/merging, and multi-granularity representations, which we include as baselines in our experimental evaluation.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 3. METHOD
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Method}
+\label{sec:method}
+
+
+
+\subsection{Problem Setup}
+\label{sec:setup}
+Let $x$ be the input text and $I$ the associated image.
+A VLM predicts an output sequence $y$ (or a discrete label).
+We introduce an action $a \in \mathcal{A}=\{\mathrm{N},\mathrm{C},\mathrm{F}\}$,
+where $\mathrm{N}$=\textsc{No-Vision}, $\mathrm{C}$=\textsc{Coarse-Vision},
+and $\mathrm{F}$=\textsc{Full-Vision}.
+Each action has a cost $c(a)$ capturing vision-related computation
+(e.g., visual token count, pixels processed, or latency proxy).
+Our goal is to learn a policy $\pi(a\mid x)$ that selects $a$ from a text-first pass,
+minimizing task error while controlling expected cost.
+
+\subsection{\method Overview}
+\label{sec:overview}
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{picture/framework.png}
+  \caption{
+  Overview of \method inference.
+  The model first performs a text-only forward pass to obtain textual representations
+  and uncertainty signals, then predicts a Value-of-Vision action
+  (\textsc{No-Vision}, \textsc{Coarse-Vision}, or \textsc{Full-Vision}).
+  Visual encoding is conditionally invoked according to the selected action,
+  enabling adaptive control over visual computation.
+  }
+  \label{fig:framework}
+\end{figure*}
+
+\paragraph{Stage 1: Text-first pass.}
+We run a text-only forward pass through the base language model
+(no visual tokens) to obtain hidden states $H(x)$ and logits $z(x)$.
+This is a single forward pass over the prompt (no autoregressive decoding) and
+avoids the vision encoder, so its overhead is modest relative to full multimodal inference.
+We mean-pool the last-layer hidden states with the attention mask:
+\begin{equation}
+h(x)=\frac{\sum_{t} H_t(x)\cdot m_t}{\sum_{t} m_t},
+\end{equation}
+where $m_t\in\{0,1\}$ is the attention mask.
+We also compute uncertainty signals from the last-token logits,
+used for optional fallback rules and uncertainty-threshold baselines;
+in ablations we concatenate them to the policy input:
+\begin{equation}
+\mathrm{Ent}(x)=-\sum_v p(v\mid x)\log p(v\mid x),\quad
+\mathrm{Mar}(x)=p_{(1)}-p_{(2)}.
+\end{equation}
+
+\paragraph{Stage 2: Value-of-Vision policy head.}
+A lightweight MLP (\texttt{vow\_head}) maps $h(x)$ (optionally augmented with uncertainty features)
+to a compact feature.
+We predict action logits in one of two modes:
+\begin{equation}
+\ell(x)=W_{\pi}h(x) \quad \text{(logits mode)}
+\end{equation}
+or a gain head that predicts the benefit of vision:
+\begin{equation}
+\hat{g}(x)=[\hat{g}_{\mathrm{C}},\hat{g}_{\mathrm{F}}],\quad
+\ell(x)=[0,\hat{g}_{\mathrm{C}},\hat{g}_{\mathrm{F}}].
+\end{equation}
+Action probabilities are $\pi(a\mid x)=\softmax(\ell(x))_a$.
+
+\paragraph{Stage 3: Conditional vision invocation.}
+Given action $a$:
+\begin{itemize}
+  \item $\mathrm{N}$: skip vision and use the text-only path;
+  \item $\mathrm{C}$: invoke vision with a low budget;
+  \item $\mathrm{F}$: invoke vision with a high budget.
+\end{itemize}
+If a separate \texttt{full\_vlm} is provided, $\mathrm{F}$ uses it; otherwise it
+reuses the base VLM. When explicit image tokens are required, we insert a
+placeholder token repeated $t(I;b)$ times to align text and visual tokens.
+
+\paragraph{Implementation notes (brief).}
+Unless otherwise stated, we use a Qwen-VL family backbone (Qwen3-VL-8B Instruct)~\cite{bai2023qwenvl} with LoRA
+adapters on attention projections, and train in two stages:
+Stage~1 fixes $a=\mathrm{F}$ with $\lambda_{\text{cost}}=0$ to warm up the task
+model, and Stage~2 optimizes the policy with $\lambda_{\text{cost}}>0$.
+In our main setting, coarse/full budgets are implemented by resizing the
+long-side to 224/448 pixels with patch size 14 (see \cref{app:impl} for full
+details). All baselines share the same prompt templates and decoding settings.
+
+\subsection{Vision Budget and Cost}
+\label{sec:budget}
+We implement two budgets by image preprocessing constraints
+(max long-side $L$ and max pixels $P$).
+Let $t(I;b)$ be the measured number of visual tokens under budget $b$
+(preferred), or a deterministic proxy (patch count) when measurement is unavailable.
+We define:
+\begin{equation}
+\begin{aligned}
+c(\mathrm{N})&=0,\\
+c(\mathrm{C})&=t(I;\mathrm{C}),\\
+c(\mathrm{F})&=t(I;\mathrm{F}).
+\end{aligned}
+\end{equation}
+Denote $\pi_{\mathrm{C}}=\pi(a=\mathrm{C}\mid x)$ and
+$\pi_{\mathrm{F}}=\pi(a=\mathrm{F}\mid x)$.
+The expected cost is:
+\begin{equation}
+\mathbb{E}[c(a)]=\pi_{\mathrm{C}}\,t(I;\mathrm{C})+\pi_{\mathrm{F}}\,t(I;\mathrm{F}).
+\end{equation}
+
+\subsection{Training Objective}
+\label{sec:objective}
+We optimize a cost-aware objective:
+\begin{equation}
+\mathcal{L}
+= \mathcal{L}_{\text{task}}
++ \lambda_{\text{cost}}\cdot \mathbb{E}[c(a)]
++ \lambda_{\text{gain}}\cdot \mathcal{L}_{\text{gain}}
++ \lambda_{\text{cal}}\cdot \mathcal{L}_{\text{cal}}.
+\label{eq:total_loss}
+\end{equation}
+
+\paragraph{Task loss.}
+$\mathcal{L}_{\text{task}}$ is the standard LM or classification loss computed
+on the logits of the chosen path (text / coarse / full). Labels are constructed
+consistently with image-token insertion.
+
+\paragraph{Gain supervision (enabled in our main training).}
+We compute counterfactual gains under \texttt{no\_grad}:
+\begin{equation}
+\begin{aligned}
+g_{\mathrm{C}} &= \mathcal{L}_{\mathrm{N}}-\mathcal{L}_{\mathrm{C}},\\
+g_{\mathrm{F}} &= \mathcal{L}_{\mathrm{N}}-\mathcal{L}_{\mathrm{F}},
+\end{aligned}
+\end{equation}
+and supervise $\hat{g}(x)$ with an MSE or ranking loss $\mathcal{L}_{\text{gain}}$.
+
+\paragraph{Action selection during training.}
+We use straight-through Gumbel-Softmax with hard one-hot actions:
+\begin{equation}
+\pi(a\mid x)\approx \mathrm{GS}(\ell(x);\tau),
+\end{equation}
+where $\mathrm{GS}$ is Gumbel-Softmax with \texttt{hard=True}.
+A soft-mixture path exists but is disabled when image-token expansion is required.
+
+\subsection{Two-Stage Training and Inference}
+\label{sec:training}
+We use a two-stage schedule:
+\begin{itemize}
+  \item \textbf{Stage 1 (full-only):} fix $a=\mathrm{F}$, set $\lambda_{\text{cost}}=0$,
+  and warm up the task model.
+  \item \textbf{Stage 2 (policy):} train the policy with cost and gain supervision.
+\end{itemize}
+At inference, we select $a=\arg\max_a \pi(a\mid x)$ (or sample if enabled).
+For reliability, we apply an optional fallback:
+if $a=\mathrm{N}$ but $\mathrm{Ent}(x)>\tau$ (or $\mathrm{Mar}(x)<\tau_m$),
+we upgrade to $\mathrm{C}$ or $\mathrm{F}$ and report pre/post-fallback action ratios.
+
+\subsection{Algorithm}
+\label{sec:algo}
+\begin{algorithm}[t]
+\caption{\method inference (text-first with conditional vision)}
+\label{alg:vovnet}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} text $x$, image $I$, budgets $(\mathrm{C},\mathrm{F})$
+\STATE Text-only forward: $H(x), z(x)$
+\STATE Pool $h(x)$ and compute action logits $\ell(x)$
+\STATE Select $a \leftarrow \arg\max_a \pi(a\mid x)$
+\IF{fallback enabled and $a=\mathrm{N}$ and $\mathrm{Ent}(x)>\tau$ (or $\mathrm{Mar}(x)<\tau_m$)}
+  \STATE $a \leftarrow \mathrm{C}$ (or $\mathrm{F}$)
+\ENDIF
+\IF{$a=\mathrm{N}$}
+  \STATE Predict from text-only path
+\ELSIF{$a=\mathrm{C}$}
+  \STATE Predict with coarse budget
+\ELSE
+  \STATE Predict with full budget
+\ENDIF
+\STATE \textbf{Output:} prediction $\hat{y}$, action $a$, cost $c(a)$
+\end{algorithmic}
+\end{algorithm}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 4. EXPERIMENTS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental Setup}
+\label{sec:setup_exp}
+
+\paragraph{Models.}
+We instantiate \method on top of a base VLM backbone (base\_vlm), using a Qwen-VL family model (Qwen3-VL-8B Instruct)~\cite{bai2023qwenvl} by default.
+The policy head is a lightweight MLP operating on pooled text hidden states (optionally augmented with uncertainty signals).
+We optionally support a higher-budget pathway (full\_vlm) for \full, though the default setting uses a shared backbone with different vision budgets.
+
+\paragraph{Datasets and splits.}
+Our primary benchmark is MMBench (dev split)~\cite{liu2024mmbench}, since test labels are withheld.
+We additionally evaluate MMMU (validation)~\cite{yue2023mmmu} for vision-critical reasoning and TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
+Training and evaluation splits are strictly separated to avoid leakage.
+For multiple-choice benchmarks, we evaluate against the ground-truth choice text (not just the letter) using a unified prompt.
+
+\paragraph{Metrics.}
+We report accuracy/EM for all datasets under a unified normalization pipeline.
+For MMBench/MMMU (multi-choice), predictions are matched to the correct choice text and accept letter-format answers (A/B/...) after normalization; we report a lenient fuzzy match in the appendix to diagnose formatting errors.
+For TextVQA, we use normalized exact match on the reference answers (lowercasing and punctuation/article normalization).
+
+\paragraph{Prompts, decoding, and cost.}
+All methods use identical prompt templates and decoding parameters (max\_new\_tokens, temperature, top\_p/top\_k, seed).
+We define \coarse\ and \full\ via preprocessing budgets (max long-side or max pixels).
+Visual cost is the measured number of visual tokens when available; otherwise we use a consistent proxy (patch count).
+We report action ratios (NO/COARSE/FULL) and cost for each method.
+
+\paragraph{Training.}
+We optimize \cref{eq:total_loss} and sweep $\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve.
+We report 2--3 random seeds for selected $\lambda_{\text{cost}}$ values.
+
+\subsection{Baselines}
+\label{sec:baselines}
+We compare against:
+\begin{itemize}
+  \item \textbf{Always-Full / Always-Coarse / No-Vision:} fixed policies establishing upper/lower bounds.
+  \item \textbf{Uncertainty Threshold:} a rule that invokes vision when entropy (or margin) exceeds a tuned threshold.
+  \item \textbf{Random Policy (ratio-matched):} samples actions to match \method's action ratios, testing whether gains come from per-instance decisions.
+  \item \textbf{Resolution Scaling:} always uses vision but varies input resolution to sweep cost.
+  \item \textbf{Token Pruning / Token Merge / Multi-Granularity Proxies:} always uses vision but reduces visual token counts to match cost.
+\end{itemize}
+All baselines share identical decoding parameters, budget definitions, and cost accounting.
+
+\subsection{Main Results: Accuracy--Cost Pareto Frontier}
+\label{sec:pareto}
+Our primary result is the accuracy--cost Pareto frontier obtained by sweeping $\lambda_{\text{cost}}$ on MMBench-dev.
+We report accuracy vs. visual cost, action ratios, and (when enabled) latency/memory.
+We expect \method to dominate fixed-budget baselines by allocating vision selectively: using \no\ for vision-redundant instances and \full\ for vision-critical ones.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{placeholder_pareto_curve}
+  \caption{Placeholder: Pareto frontier (accuracy vs visual cost). Replace with your plot.}
+  \label{fig:pareto}
+\end{figure}
+
+\begin{table}[t]
+  \caption{Main results on MMBench-dev (replace TBD with numbers). N/C/F denotes action ratios; Lat. is latency.}
+  \label{tab:main}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.30\columnwidth}cccc}
+    \toprule
+    Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F & Lat.$\downarrow$ \\
+    \midrule
+    Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    Always-Coarse & \textit{TBD} & \textit{TBD} & 0/100/0 & \textit{TBD} \\
+    No-Vision & \textit{TBD} & 0 & 100/0/0 & \textit{TBD} \\
+    Threshold (best) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Random Matched & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Res. Scaling (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    Token Pruning (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    Token Merge (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    Multi-Gran. (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    \method (ours) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Generalization Across Benchmarks}
+\label{sec:generalization}
+We evaluate the trained policy on MMMU and TextVQA without further tuning.
+We analyze whether the action distribution shifts appropriately: MMMU should increase \full\ usage, while OCR-heavy TextVQA should reduce \no.
+\cref{tab:generalization} reports accuracy, cost, and action ratios.
+
+\begin{table}[t]
+  \caption{Generalization results (MMMU/TextVQA). Replace TBD with numbers.}
+  \label{tab:generalization}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.20\columnwidth}p{0.22\columnwidth}ccc}
+    \toprule
+    Dataset & Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
+    \midrule
+    MMMU & \method & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    MMMU & Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 \\
+    TextVQA & \method & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    TextVQA & Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Ablations}
+\label{sec:ablation}
+We conduct ablations to isolate which components drive Pareto improvements:
+\begin{itemize}
+  \item \textbf{Policy features:} pooled hidden states only vs.\ hidden+entropy vs.\ hidden+entropy+margin.
+  \item \textbf{Decision training:} soft mixing vs.\ straight-through Gumbel-Softmax.
+  \item \textbf{Action space:} binary (\no\ vs.\ \full) vs.\ ternary (\no/\coarse/\full).
+  \item \textbf{Cost term:} $\lambda_{\text{cost}}=0$ vs.\ $\lambda_{\text{cost}}>0$.
+  \item \textbf{Budget settings:} alternative coarse/full preprocessing constraints.
+\end{itemize}
+
+\begin{table}[t]
+  \caption{Ablations on MMBench-dev (replace TBD with numbers).}
+  \label{tab:ablation}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.38\columnwidth}ccc}
+    \toprule
+    Variant & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
+    \midrule
+    Hidden only & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Hidden+Entropy & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Hidden+Entropy+Margin & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Soft mixing & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Gumbel-ST & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Binary actions & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    $\lambda_{\text{cost}}=0$ & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Reliability and Safety Analyses}
+\label{sec:reliability}
+Selective vision can fail if the policy skips vision on vision-critical instances.
+We report (i) a fallback mechanism that upgrades \no\ under high uncertainty, and its accuracy--cost impact;
+(ii) error slicing by chosen action (NO/COARSE/FULL); and (iii) calibration metrics (ECE) for action confidence.
+
+\subsection{System Profiling}
+\label{sec:profiling}
+For deployment relevance, we profile end-to-end inference on fixed hardware:
+latency (P50/P90), peak GPU memory, and throughput.
+We also report the effect of KV-cache reuse between the text-first and conditional-vision passes when supported,
+and ensure all baselines share identical cache settings.
+
+\begin{table}[t]
+  \caption{System profiling on MMBench-dev (replace TBD with numbers).}
+  \label{tab:profiling}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.30\columnwidth}cccc}
+    \toprule
+    Method & P50$\downarrow$ & P90$\downarrow$ & Mem$\downarrow$ & Tok/s$\uparrow$ \\
+    \midrule
+    Always-Full & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Always-Coarse & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    \method (ours) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 5. DISCUSSION / LIMITATIONS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\paragraph{When does selective vision help the most?}
+\method is most effective when the input distribution contains a meaningful mixture of vision-redundant and vision-critical instances.
+In settings where nearly all queries require vision (e.g., fine-grained OCR-only tasks), the optimal policy may approach Always-Full, limiting savings.
+
+\paragraph{Text-first overhead.}
+The text-only pass still traverses the full language model stack; it is not free.
+Our approach yields the largest gains when the vision encoder (and multimodal fusion) dominates runtime or memory.
+We therefore report both token-based costs and system-level profiling to validate savings.
+
+\paragraph{Cost measurement and fairness.}
+Accurate cost accounting is crucial for meaningful Pareto comparisons.
+We prioritize measured visual token counts; when proxies are used, we ensure consistency across methods and report profiling results to validate that token-based costs correlate with wall-clock improvements.
+
+\paragraph{Policy errors and mitigations.}
+A key risk is skipping vision on instances where the image is essential.
+We mitigate this via a conservative fallback mechanism driven by uncertainty, and we report action-conditioned error slices to make failures transparent.
+
+\paragraph{Extensions.}
+Our action space is deliberately simple for interpretability and deployment.
+Future work could extend \method with finer-grained actions (e.g., region-based refinement, multi-stage budgets) or learned cost predictors that incorporate hardware-specific latency models.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% 6. CONCLUSION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusion}
+\label{sec:conclusion}
+We introduced \method, a cost-aware framework for selective vision invocation in VLM inference.
+By performing a text-first pass and learning a lightweight policy to choose among \no/\coarse/\full budgets, \method optimizes an explicit accuracy--cost objective and yields controllable Pareto trade-offs.
+Our evaluation protocol emphasizes both performance and deployment metrics, highlighting that selective vision usage can substantially reduce unnecessary visual computation without sacrificing accuracy.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% IMPACT STATEMENT (REQUIRED BY ICML)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{Impact Statement}
+This paper studies methods to reduce unnecessary visual computation in vision-language model inference.
+The primary positive impact is improved efficiency (lower latency, memory, and energy) for deploying multimodal systems.
+A potential risk is degraded performance if vision is skipped in safety-critical settings; we address this through reliability analyses and optional fallback rules.
+As with standard VLM deployments, practitioners should follow appropriate data governance and privacy safeguards when processing user-provided images.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ACKNOWLEDGEMENTS (ONLY FOR ACCEPTED VERSION)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{Acknowledgements}
+\textbf{Do not include acknowledgements in the initial version.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% REFERENCES
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\bibliographystyle{icml2026}
+\bibliography{paper}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newpage
+\appendix
+\onecolumn
+
+\section{Additional Implementation Details}
+\label{app:impl}
+
+\paragraph{Model and adapters.}
+Base model: Qwen-VL family (Qwen3-VL-8B Instruct). Optional full model: Qwen3-VL-8B Thinking
+(used only when \texttt{use\_thinking\_for\_full} is enabled).
+LoRA is applied to attention projections (q/k/v/o) with rank 16, alpha 32,
+dropout 0.05. Vision encoder parameters are frozen by default.
+
+\paragraph{Vision budgets and cost.}
+Coarse budget: long-side 224, max pixels 50{,}176. Full budget: long-side 448,
+max pixels 200{,}704. Patch size is 14. Cost is measured as the number of
+visual tokens produced by the vision encoder; if unavailable, we use a patch
+count proxy computed from preprocessing.
+
+\paragraph{Training schedule and optimization.}
+Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$.
+Stage~2 trains the policy head with $\lambda_{\text{cost}} \in
+\{0, 0.01, 0.02, 0.05, 0.1\}$ for Pareto sweeps.
+Optimizer: AdamW, learning rate $5\times 10^{-5}$, weight decay 0,
+max grad norm 1.0, warmup steps 0. Per-device batch size 1 with gradient
+accumulation 4. Mixed precision fp16 and gradient checkpointing are enabled
+on V100 GPUs. Checkpoints are saved every 5{,}000 steps.
+
+\paragraph{Evaluation protocol.}
+Main benchmark: MMBench-dev (test labels are withheld).
+Generalization: MMMU validation and TextVQA validation.
+Prompt template: \texttt{Question: \{question\}\\nAnswer:}.
+For multiple-choice datasets, we evaluate against the correct choice text
+and accept either the letter or matching choice text as correct after basic normalization
+(lowercasing, punctuation/article removal). For TextVQA, we use normalized exact match;
+we additionally report a fuzzy multi-choice match in the appendix to quantify formatting errors.
+All baselines use identical prompts, decoding parameters, and budgets.
+
+\paragraph{Hardware and software.}
+Experiments are run on 8$\times$V100 (32\,GB) GPUs.
+Software: Python 3.10, PyTorch 2.1.2+cu118, Transformers 4.44.2.
+CUDA 11.8 and NCCL are used for multi-GPU training.
+
+\section{Additional Experimental Results}
+\label{app:extra}
+\paragraph{Extended Pareto curves.}
+We include per-dataset Pareto curves and action-ratio plots for all baselines
+(Always-Full/Coarse/No-Vision, Threshold, Random Matched, Resolution Scaling,
+Token Pruning, Token Merge, Multi-Granularity).
+
+\paragraph{Additional ablations.}
+We report temperature and prompt-template sensitivity, alternative uncertainty
+signals (entropy vs.\ margin), and pooling choices for the policy input.
+
+\paragraph{Profiling breakdowns.}
+We provide additional latency/throughput tables across batch sizes and
+hardware configurations, including memory scaling with input resolution.
+
+\paragraph{Qualitative analysis.}
+We show representative success/failure cases with predicted action,
+model output, and error category.
+
+\section{Reproducibility Checklist}
+\label{app:repro}
+\begin{itemize}
+  \item Exact command lines for training and evaluation (see \texttt{docs/EXPERIMENTS.md}).
+  \item Random seed 42 for all runs; multi-seed sweeps report mean and std.
+  \item Full hardware/software stack (GPU type, CUDA, PyTorch, Transformers).
+  \item Dataset preprocessing scripts and generated JSONL file hashes.
+  \item An anonymized code/data link for review (supplementary material).
+\end{itemize}
+
+\end{document}
