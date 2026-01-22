@@ -711,6 +711,8 @@ def evaluate_dataset(
     tokenizer = raw_model.base_vlm.tokenizer
     with torch.no_grad():
         for batch in loader:
+            if batch is None:
+                continue
             if profile:
                 profiler.start()
             if baseline_name == "uncertainty_threshold":
