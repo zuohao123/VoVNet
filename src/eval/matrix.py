@@ -204,8 +204,22 @@ def _forward_with_uncertainty_threshold(
     vision_mode: str,
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
+    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=batch.get("images"),
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
     text_outputs, _, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
+        input_ids=text_input_ids, attention_mask=text_attention_mask
     )
     if uncertainty_metric == "margin":
         margin = raw_model._compute_margin(text_outputs)
@@ -215,19 +229,13 @@ def _forward_with_uncertainty_threshold(
     high_action = Action.FULL_VISION if vision_mode == "full" else Action.COARSE_VISION
     actions = select_actions_binary(uncertainty, threshold, high_action=high_action)
 
-    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
-        raw_model._prepare_token_counts(
-            images=batch.get("images"),
-            device=batch["input_ids"].device,
-            batch_size=batch["input_ids"].size(0),
-        )
-    )
-    logits, vision_tokens = raw_model._forward_hard_actions(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+    logits, vision_tokens, labels = raw_model._forward_hard_actions(
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=batch.get("images"),
         text_outputs=text_outputs,
         actions=actions,
+        text_labels=text_labels,
         coarse_inputs=coarse_inputs,
         full_inputs=full_inputs,
     )
@@ -242,6 +250,7 @@ def _forward_with_uncertainty_threshold(
         "expected_cost": expected_cost,
         "vision_tokens": vision_tokens,
         "action_label": action_label,
+        "labels": labels,
     }
 
 
@@ -558,11 +567,25 @@ def _forward_with_random_policy_matched(
     generator: torch.Generator,
 ) -> Dict[str, Any]:
     raw_model = getattr(model, "module", model)
-    text_outputs, _, _ = raw_model.text_first(
-        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-    )
     batch_size = batch["input_ids"].size(0)
     device = batch["input_ids"].device
+    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=batch.get("images"),
+            device=device,
+            batch_size=batch_size,
+        )
+    )
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
+    text_outputs, _, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
     if bucket_ratios is not None:
         entropy = raw_model._compute_uncertainty(text_outputs)
         if bucket_thresholds is None:
@@ -580,19 +603,13 @@ def _forward_with_random_policy_matched(
         )
         action_label = "RANDOM_MATCHED_GLOBAL"
 
-    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
-        raw_model._prepare_token_counts(
-            images=batch.get("images"),
-            device=batch["input_ids"].device,
-            batch_size=batch_size,
-        )
-    )
-    logits, vision_tokens = raw_model._forward_hard_actions(
-        input_ids=batch["input_ids"],
-        attention_mask=batch["attention_mask"],
+    logits, vision_tokens, labels = raw_model._forward_hard_actions(
+        input_ids=text_input_ids,
+        attention_mask=text_attention_mask,
         images=batch.get("images"),
         text_outputs=text_outputs,
         actions=actions,
+        text_labels=text_labels,
         coarse_inputs=coarse_inputs,
         full_inputs=full_inputs,
     )
@@ -606,6 +623,7 @@ def _forward_with_random_policy_matched(
         "expected_cost": expected_cost,
         "vision_tokens": vision_tokens,
         "action_label": action_label,
+        "labels": labels,
     }
 
 

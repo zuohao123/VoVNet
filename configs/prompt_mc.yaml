@@ -1,0 +1,3 @@
+data:
+  # Multi-choice prompt: include options and ask for a letter answer.
+  prompt_template: "Question: {question}\nContext: {context}\nOptions:\n{choices}\nAnswer (letter only):"

@@ -8,6 +8,8 @@ from PIL import Image
 import torch
 from transformers import PreTrainedTokenizerBase
 
+_CHOICE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 
 def _blank_image() -> Image.Image:
     return Image.new("RGB", (1, 1), color=0)
@@ -27,6 +29,29 @@ def _get_image_token(tokenizer: PreTrainedTokenizerBase) -> Optional[str]:
     return None
 
 
+def _format_choices(choices: Any) -> str:
+    if not choices or not isinstance(choices, list):
+        return ""
+    lines: List[str] = []
+    for idx, item in enumerate(choices):
+        if idx >= len(_CHOICE_LETTERS):
+            break
+        text = str(item).strip()
+        if not text:
+            continue
+        lines.append(f"{_CHOICE_LETTERS[idx]}. {text}")
+    return "\n".join(lines)
+
+
+def _append_before_answer(prompt: str, addition: str) -> str:
+    if not addition:
+        return prompt
+    marker = "Answer:"
+    if marker in prompt:
+        return prompt.replace(marker, f"{addition}\n{marker}", 1)
+    return f"{prompt}\n{addition}"
+
+
 @dataclass
 class VLMDataCollator:
     """Collator that builds LM-style inputs with optional images."""
@@ -40,8 +65,18 @@ class VLMDataCollator:
         answers = [item.get("answer", "") for item in batch]
         image_token = _get_image_token(self.tokenizer)
         prompts = []
-        for q in questions:
-            prompt = self.prompt_template.format(question=q)
+        for item, q in zip(batch, questions):
+            context = item.get("context") or ""
+            choices_text = _format_choices(item.get("choices"))
+            prompt = self.prompt_template.format(
+                question=q,
+                context=context,
+                choices=choices_text,
+            )
+            if context and "{context}" not in self.prompt_template:
+                prompt = _append_before_answer(prompt, f"Context: {context}")
+            if choices_text and "{choices}" not in self.prompt_template:
+                prompt = _append_before_answer(prompt, f"Options:\n{choices_text}")
             if image_token and image_token not in prompt:
                 prompt = f"{image_token}\n{prompt}".strip()
             prompts.append(prompt)
