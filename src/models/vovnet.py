@@ -794,6 +794,13 @@ class VoVNet(nn.Module):
             merged[:, 2] = (merged[:, 2] + spatial_merge - 1) // spatial_merge
         return merged
 
+    def _should_use_merged_grid(self, model: BaseVLM) -> bool:
+        config = getattr(model.model, "config", None)
+        model_type = getattr(config, "model_type", "") if config is not None else ""
+        name_hint = getattr(model, "model_name", "")
+        hint = f"{model_type} {name_hint}".lower()
+        return "qwen3_vl" in hint or "qwen2_vl" in hint
+
     def _prepare_vision_inputs(
         self,
         images: List[Image.Image],
@@ -810,6 +817,8 @@ class VoVNet(nn.Module):
                 grid = grid.unsqueeze(0)
             merged_grid = self._apply_merge_to_grid(grid, model=model)
             token_counts = merged_grid.long().prod(dim=-1)
+            if self._should_use_merged_grid(model):
+                image_grid_thw = merged_grid
         return VisionInputs(
             pixel_values=pixel_values,
             token_counts=token_counts,
