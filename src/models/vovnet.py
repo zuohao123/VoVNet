@@ -818,10 +818,7 @@ class VoVNet(nn.Module):
             grid = image_grid_thw
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
-            if self._should_use_merged_grid(model):
-                merged_grid = grid
-            else:
-                merged_grid = self._apply_merge_to_grid(grid, model=model)
+            merged_grid = self._apply_merge_to_grid(grid, model=model)
             token_counts = merged_grid.long().prod(dim=-1)
             if self._should_use_merged_grid(model):
                 image_grid_thw = merged_grid
@@ -1140,8 +1137,6 @@ class VoVNet(nn.Module):
             if grid_tensor.ndim == 1:
                 grid_tensor = grid_tensor.unsqueeze(0)
             if grid_tensor.shape[-1] == 3:
-                if self._should_use_merged_grid(model):
-                    return grid_tensor.long().prod(dim=-1)
                 grid_tensor = self._apply_merge_to_grid(grid_tensor, model=model)
                 return grid_tensor.long().prod(dim=-1)
         if pixel_values is not None:
