@@ -45,6 +45,7 @@ class Trainer:
         gain_loss_type: str = "mse",
         gain_loss_weight: float = 0.0,
         gain_margin: float = 0.0,
+        entropy_weight: float = 0.0,
         baseline_name: Optional[str] = None,
         finetune_pruning: bool = False,
         cost_warmup_steps: int = 0,
@@ -71,6 +72,7 @@ class Trainer:
         self.gain_loss_type = gain_loss_type
         self.gain_loss_weight = gain_loss_weight
         self.gain_margin = gain_margin
+        self.entropy_weight = float(entropy_weight)
         self.baseline_name = normalize_baseline_name(baseline_name)
         self.finetune_pruning = finetune_pruning
 
@@ -116,6 +118,7 @@ class Trainer:
             "cost_loss": 0.0,
             "calibration_loss": 0.0,
             "gain_loss": 0.0,
+            "entropy_loss": 0.0,
         }
         for epoch in range(epochs):
             self.model.train()
@@ -154,6 +157,8 @@ class Trainer:
                         outputs.get("labels"),
                         outputs["expected_cost"],
                         lambda_cost,
+                        action_probs=outputs.get("action_probs"),
+                        lambda_entropy=self.entropy_weight,
                         calibration_value=None,
                         lambda_cal=self.lambda_cal,
                         gain_pred=outputs.get("gain_pred"),
@@ -193,6 +198,9 @@ class Trainer:
                     losses["calibration_loss"].item()
                 ) * batch_size
                 window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
+                window_losses["entropy_loss"] += float(
+                    losses.get("entropy_loss", 0.0).item()
+                ) * batch_size
 
                 if global_step % self.log_every == 0:
                     avg_losses = {

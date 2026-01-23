@@ -143,6 +143,7 @@ def build_model(cfg: Config) -> VoVNet:
         gumbel_tau=cfg.policy.gumbel_tau,
         use_straight_through=cfg.policy.use_straight_through,
         eval_sample=cfg.policy.eval_sample,
+        explore_prob=cfg.policy.explore_prob,
         policy_mode=cfg.policy.policy_mode,
         fallback_mode=cfg.policy.fallback_mode,
         fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
@@ -700,6 +701,7 @@ def main() -> None:
         "cost_loss": 0.0,
         "calibration_loss": 0.0,
         "gain_loss": 0.0,
+        "entropy_loss": 0.0,
     }
 
     epoch_idx = 0
@@ -786,6 +788,8 @@ def main() -> None:
                             outputs.get("labels"),
                             outputs["expected_cost"],
                             lambda_cost,
+                            action_probs=outputs.get("action_probs"),
+                            lambda_entropy=cfg.policy.entropy_weight,
                             calibration_value=None,
                             lambda_cal=cfg.policy.calibration_lambda,
                             gain_pred=outputs.get("gain_pred"),
@@ -846,6 +850,9 @@ def main() -> None:
                     losses["calibration_loss"].item()
                 ) * batch_size
                 window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
+                window_losses["entropy_loss"] += float(
+                    losses.get("entropy_loss", 0.0).item()
+                ) * batch_size
 
                 if global_step % cfg.training.log_every == 0 and rank == 0:
                     avg_losses = {

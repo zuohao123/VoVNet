@@ -31,6 +31,17 @@ def compute_calibration_loss(calibration_value: Tensor, lambda_cal: float) -> Te
     return calibration_value * lambda_cal
 
 
+def compute_entropy_loss(
+    action_probs: Tensor | None, lambda_entropy: float
+) -> Tensor:
+    """Encourage action diversity via entropy bonus."""
+    if action_probs is None or lambda_entropy <= 0:
+        device = action_probs.device if action_probs is not None else torch.device("cpu")
+        return torch.tensor(0.0, device=device)
+    entropy = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1).mean()
+    return -lambda_entropy * entropy
+
+
 def compute_gain_loss(
     gain_pred: Tensor | None,
     gain_true: Tensor | None,
@@ -69,6 +80,8 @@ def compute_total_loss(
     labels: Tensor | None,
     expected_cost: Tensor,
     lambda_cost: float,
+    action_probs: Tensor | None = None,
+    lambda_entropy: float = 0.0,
     calibration_value: Tensor | None = None,
     lambda_cal: float = 0.0,
     gain_pred: Tensor | None = None,
@@ -91,11 +104,13 @@ def compute_total_loss(
         loss_type=gain_loss_type,
         margin=gain_margin,
     )
-    total_loss = task_loss + cost_loss + cal_loss + lambda_gain * gain_loss
+    entropy_loss = compute_entropy_loss(action_probs, lambda_entropy)
+    total_loss = task_loss + cost_loss + cal_loss + lambda_gain * gain_loss + entropy_loss
     return {
         "total_loss": total_loss,
         "task_loss": task_loss,
         "cost_loss": cost_loss,
         "calibration_loss": cal_loss,
         "gain_loss": gain_loss,
+        "entropy_loss": entropy_loss,
     }

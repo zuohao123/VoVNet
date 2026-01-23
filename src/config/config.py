@@ -63,10 +63,12 @@ class PolicyConfig:
     lambda_cost: float = 0.1
     cost_warmup_steps: int = 0
     calibration_lambda: float = 0.0
+    entropy_weight: float = 0.0
     gain_supervision: bool = False
     gain_loss_type: str = "mse"
     gain_loss_weight: float = 0.0
     gain_margin: float = 0.0
+    explore_prob: float = 0.0
 
 
 @dataclass
@@ -202,6 +204,10 @@ class Config:
             raise ValueError("fallback_mode must be none, coarse, or full")
         if self.policy.cost_warmup_steps < 0:
             raise ValueError("policy.cost_warmup_steps must be >= 0")
+        if self.policy.entropy_weight < 0:
+            raise ValueError("policy.entropy_weight must be >= 0")
+        if not 0.0 <= self.policy.explore_prob <= 1.0:
+            raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name
         if baseline is not None:
             normalized = baseline.strip().lower()
@@ -414,10 +420,16 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.calibration_lambda = _to_float(
         cfg.policy.calibration_lambda, "policy.calibration_lambda"
     )
+    cfg.policy.entropy_weight = _to_float(
+        cfg.policy.entropy_weight, "policy.entropy_weight"
+    )
     cfg.policy.gain_loss_weight = _to_float(
         cfg.policy.gain_loss_weight, "policy.gain_loss_weight"
     )
     cfg.policy.gain_margin = _to_float(cfg.policy.gain_margin, "policy.gain_margin")
+    cfg.policy.explore_prob = _to_float(
+        cfg.policy.explore_prob, "policy.explore_prob"
+    )
     cfg.policy.baseline_threshold = _to_float(
         cfg.policy.baseline_threshold, "policy.baseline_threshold"
     )

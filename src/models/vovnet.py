@@ -72,6 +72,7 @@ class VoVNet(nn.Module):
         gumbel_tau: float = 1.0,
         use_straight_through: bool = True,
         eval_sample: bool = False,
+        explore_prob: float = 0.0,
         policy_mode: str = "logits",
         fallback_mode: str = "none",
         fallback_entropy_threshold: Optional[float] = None,
@@ -88,6 +89,7 @@ class VoVNet(nn.Module):
         self.gumbel_tau = gumbel_tau
         self.use_straight_through = use_straight_through
         self.eval_sample = eval_sample
+        self.explore_prob = float(explore_prob)
         if policy_mode not in {"logits", "gain"}:
             raise ValueError("policy_mode must be logits or gain")
         self.policy_mode = policy_mode
@@ -446,9 +448,14 @@ class VoVNet(nn.Module):
         if self.training:
             if self.use_straight_through:
                 probs = F.gumbel_softmax(
-                    action_logits, tau=self.gumbel_tau, hard=True
+                    action_logits, tau=self.gumbel_tau, hard=False
                 )
-                actions = probs.argmax(dim=-1)
+                if self.explore_prob > 0:
+                    uniform = torch.full_like(probs, 1.0 / probs.size(-1))
+                    probs = (1.0 - self.explore_prob) * probs + self.explore_prob * uniform
+                    actions = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                else:
+                    actions = probs.argmax(dim=-1)
             else:
                 probs = F.softmax(action_logits, dim=-1)
                 actions = probs.argmax(dim=-1)

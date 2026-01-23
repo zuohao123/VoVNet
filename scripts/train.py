@@ -247,29 +247,30 @@ def main() -> None:
         model, optimizer, train_loader, eval_loader, scheduler
     )
 
-    trainer = Trainer(
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        accelerator=accelerator,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        output_dir=str(output_dir),
-        lambda_cost=cfg.policy.lambda_cost,
-        lambda_cal=cfg.policy.calibration_lambda,
-        log_every=cfg.training.log_every,
-        save_every=cfg.training.save_every,
-        max_grad_norm=cfg.training.max_grad_norm,
-        profile_train=cfg.training.profile,
-        profile_eval=cfg.eval.profile,
-        gain_supervision=cfg.policy.gain_supervision,
-        gain_loss_type=cfg.policy.gain_loss_type,
-        gain_loss_weight=cfg.policy.gain_loss_weight,
-        gain_margin=cfg.policy.gain_margin,
-        baseline_name=cfg.policy.baseline_name,
-        finetune_pruning=cfg.policy.finetune_pruning,
-        cost_warmup_steps=cfg.policy.cost_warmup_steps,
-    )
+        trainer = Trainer(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            accelerator=accelerator,
+            train_loader=train_loader,
+            eval_loader=eval_loader,
+            output_dir=str(output_dir),
+            lambda_cost=cfg.policy.lambda_cost,
+            lambda_cal=cfg.policy.calibration_lambda,
+            log_every=cfg.training.log_every,
+            save_every=cfg.training.save_every,
+            max_grad_norm=cfg.training.max_grad_norm,
+            profile_train=cfg.training.profile,
+            profile_eval=cfg.eval.profile,
+            gain_supervision=cfg.policy.gain_supervision,
+            gain_loss_type=cfg.policy.gain_loss_type,
+            gain_loss_weight=cfg.policy.gain_loss_weight,
+            gain_margin=cfg.policy.gain_margin,
+            entropy_weight=cfg.policy.entropy_weight,
+            baseline_name=cfg.policy.baseline_name,
+            finetune_pruning=cfg.policy.finetune_pruning,
+            cost_warmup_steps=cfg.policy.cost_warmup_steps,
+        )
     trainer.train(cfg.training.epochs)
 
 
