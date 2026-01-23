@@ -2,6 +2,8 @@ env:
   CFG_BASE: configs/base.yaml
   CFG_TRAIN: configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml
   EVAL_SINGLE: configs/eval_single_gpu.yaml
+  EVAL_PROFILE: configs/eval_profile.yaml
+  EVAL_LIMIT: configs/eval_quick_500.yaml
   MMBENCH_DATASET_EXACT: configs/eval_mmbench_dev_text.yaml
   MMBENCH_DATASET_FUZZY: configs/eval_mmbench_dev_text_fuzzy.yaml
   CKPT: outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt
@@ -10,7 +12,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_policy_exact
@@ -21,7 +23,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_policy_fuzzy
@@ -32,7 +34,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_full_exact
@@ -43,7 +45,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_full_fuzzy
@@ -54,7 +56,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_coarse_exact
@@ -65,7 +67,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_coarse.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_coarse_fuzzy
@@ -76,7 +78,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_no_vision_exact
@@ -87,7 +89,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_no_vision.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_no_vision_fuzzy
@@ -98,7 +100,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_random_exact
@@ -109,7 +111,7 @@ jobs:
     cmd: >-
       python -m scripts.eval
       --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_matched.yaml
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --output_dir outputs/eval/full/mmbench_dev_random_fuzzy
@@ -120,7 +122,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_threshold
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
@@ -133,7 +135,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_threshold
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
@@ -146,7 +148,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_resolution
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --vision_budget_list 224,336,448
@@ -158,7 +160,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_resolution
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --vision_budget_list 224,336,448
@@ -170,7 +172,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_pruning
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --ratios 1.0 0.75 0.5 0.25
@@ -183,7 +185,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_pruning
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --ratios 1.0 0.75 0.5 0.25
@@ -196,7 +198,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_merge
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --merge_ratio_list 0.25,0.5,0.75,1.0
@@ -210,7 +212,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_merge
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --merge_ratio_list 0.25,0.5,0.75,1.0
@@ -224,7 +226,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_granularity
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_EXACT
       --checkpoint $CKPT
       --pooling_list 1,2,4
@@ -236,7 +238,7 @@ jobs:
     cmd: >-
       python -m scripts.pareto_granularity
       --config $CFG_BASE --config $CFG_TRAIN
-      --config $EVAL_SINGLE
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
       --dataset_config $MMBENCH_DATASET_FUZZY
       --checkpoint $CKPT
       --pooling_list 1,2,4
