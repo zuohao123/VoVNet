@@ -59,6 +59,7 @@ class VLMDataCollator:
     tokenizer: PreTrainedTokenizerBase
     prompt_template: str
     max_length: Optional[int] = None
+    use_sample_prompt: bool = True
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         questions = [item.get("question", "") for item in batch]
@@ -82,7 +83,12 @@ class VLMDataCollator:
         for item, q in zip(batch, questions):
             context = item.get("context") or ""
             choices_text = _format_choices(item.get("choices"))
-            prompt = self.prompt_template.format(
+            prompt_tpl = (
+                item.get("prompt_template")
+                if self.use_sample_prompt and item.get("prompt_template")
+                else self.prompt_template
+            )
+            prompt = prompt_tpl.format(
                 question=q,
                 context=context,
                 choices=choices_text,
