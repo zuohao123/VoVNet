@@ -30,7 +30,7 @@ policy:
   policy_mode: "gain"
   gain_supervision: true
   gain_loss_weight: 1.0
-  lambda_cost: 0.001
+  lambda_cost: 0.005
   cost_scale: 0.1
   gumbel_tau: 1.0
   use_straight_through: true
