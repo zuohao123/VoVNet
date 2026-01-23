@@ -29,14 +29,16 @@ training:
 policy:
   policy_mode: "gain"
   gain_supervision: true
-  gain_loss_weight: 2.0
-  lambda_cost: 0.002
+  gain_loss_type: "rank_hinge"
+  gain_loss_weight: 8.0
+  gain_margin: 0.1
+  lambda_cost: 0.001
   cost_scale: 0.05
-  cost_warmup_steps: 1000
-  gumbel_tau: 1.5
+  cost_warmup_steps: 2000
+  gumbel_tau: 2.0
   use_straight_through: true
-  entropy_weight: 0.01
-  explore_prob: 0.05
+  entropy_weight: 0.05
+  explore_prob: 0.2
 
 vision_budget:
   coarse_long_side: 224
