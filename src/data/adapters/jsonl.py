@@ -54,7 +54,7 @@ class JsonlVQADataset(Dataset):
         item = self.items[idx]
         question = str(item.get(self.text_field, ""))
         answer_value = item.get(self.answer_field)
-        answer_info = answer_value
+        answer_info = item.get("answer_info", answer_value)
         if self.answer_field != "answer":
             raw_answer = item.get("answer")
             if isinstance(raw_answer, dict):
