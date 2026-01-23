@@ -1049,6 +1049,10 @@ class VoVNet(nn.Module):
                         batch_size=len(images),
                         model=model,
                     )
+                    if image_grid_thw is not None:
+                        image_grid_thw = self._apply_merge_to_grid(
+                            image_grid_thw, model=model
+                        )
                     return pixel_values, token_counts, image_grid_thw
 
         arrays = [np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0 for img in images]
@@ -1060,6 +1064,7 @@ class VoVNet(nn.Module):
         grid_h = math.ceil(height / patch_size)
         grid_w = math.ceil(width / patch_size)
         image_grid_thw = torch.tensor([[1, grid_h, grid_w]] * pixel_values.shape[0])
+        image_grid_thw = self._apply_merge_to_grid(image_grid_thw, model=model)
         token_counts = self._estimate_tokens_from_pixel_values(pixel_values, model=model)
         return pixel_values, token_counts, image_grid_thw
 
