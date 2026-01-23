@@ -682,6 +682,7 @@ class VoVNet(nn.Module):
             grid = vision_inputs.image_grid_thw.to(dtype=torch.long)
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
+            grid = self._apply_merge_to_grid(grid, model=model)
             counts = grid.prod(dim=-1)
             return counts.clamp(min=1)
         pixel_values = vision_inputs.pixel_values
@@ -766,7 +767,8 @@ class VoVNet(nn.Module):
             grid = image_grid_thw
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
-            token_counts = grid.long().prod(dim=-1)
+            merged_grid = self._apply_merge_to_grid(grid, model=model)
+            token_counts = merged_grid.long().prod(dim=-1)
         return VisionInputs(
             pixel_values=pixel_values,
             token_counts=token_counts,
@@ -1082,6 +1084,7 @@ class VoVNet(nn.Module):
             if grid_tensor.ndim == 1:
                 grid_tensor = grid_tensor.unsqueeze(0)
             if grid_tensor.shape[-1] == 3:
+                grid_tensor = self._apply_merge_to_grid(grid_tensor, model=model)
                 return grid_tensor.long().prod(dim=-1)
         if pixel_values is not None:
             return self._estimate_tokens_from_pixel_values(pixel_values, model=model)
@@ -1101,6 +1104,7 @@ class VoVNet(nn.Module):
             grid_h = math.ceil(height / patch_size)
             grid_w = math.ceil(width / patch_size)
             grid = torch.tensor([[1, grid_h, grid_w]] * batch)
+            grid = self._apply_merge_to_grid(grid, model=model)
             tokens = grid.long().prod(dim=-1)
             return tokens
         if pixel_values.dim() == 5:
@@ -1108,6 +1112,7 @@ class VoVNet(nn.Module):
             grid_h = math.ceil(height / patch_size)
             grid_w = math.ceil(width / patch_size)
             grid = torch.tensor([[frames, grid_h, grid_w]] * batch)
+            grid = self._apply_merge_to_grid(grid, model=model)
             tokens = grid.long().prod(dim=-1)
             return tokens
         return torch.zeros(pixel_values.shape[0], dtype=torch.long)
