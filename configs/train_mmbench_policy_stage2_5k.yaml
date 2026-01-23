@@ -1,7 +1,7 @@
 # Stage2 policy training on MMBench-only (resume from stage1 checkpoint).
 data:
-  train_jsonl: "data/processed/mmbench_core/mmbench_core_train.jsonl"
-  eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
+  train_jsonl: "data/processed/mmbench_core/mmbench_core_train_with_prompt.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_dev_text_prompt.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
 model:
@@ -35,6 +35,8 @@ policy:
   cost_warmup_steps: 1000
   gumbel_tau: 1.5
   use_straight_through: true
+  entropy_weight: 0.01
+  explore_prob: 0.05
 
 vision_budget:
   coarse_long_side: 224

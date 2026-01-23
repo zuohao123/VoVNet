@@ -1,7 +1,7 @@
 # Two-stage training capped at 5k steps per stage (balanced cost).
 data:
-  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
-  eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
+  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train_with_prompt.jsonl"
+  eval_jsonl: "data/processed/mmbench/mmbench_dev_text_prompt.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
 model:
@@ -35,6 +35,8 @@ policy:
   cost_warmup_steps: 1000
   gumbel_tau: 1.5
   use_straight_through: true
+  entropy_weight: 0.01
+  explore_prob: 0.05
 
 vision_budget:
   coarse_long_side: 224
