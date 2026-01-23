@@ -147,6 +147,7 @@ def build_model(cfg: Config) -> VoVNet:
         gumbel_tau=cfg.policy.gumbel_tau,
         use_straight_through=cfg.policy.use_straight_through,
         eval_sample=cfg.policy.eval_sample,
+        explore_prob=cfg.policy.explore_prob,
         policy_mode=cfg.policy.policy_mode,
         fallback_mode=cfg.policy.fallback_mode,
         fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
