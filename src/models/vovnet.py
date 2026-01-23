@@ -636,11 +636,17 @@ class VoVNet(nn.Module):
         full_labels: Optional[List[List[int]]] = None
 
         if image_token_id is not None and coarse_inputs is not None:
-            counts_tensor = (
-                coarse_inputs.token_counts
-                if coarse_inputs.token_counts is not None
-                else self._vision_token_counts(coarse_inputs, model=self.base_vlm)
-            )
+            if coarse_inputs.image_grid_thw is not None:
+                grid = coarse_inputs.image_grid_thw
+                if grid.ndim == 1:
+                    grid = grid.unsqueeze(0)
+                counts_tensor = grid.long().prod(dim=-1)
+            else:
+                counts_tensor = (
+                    coarse_inputs.token_counts
+                    if coarse_inputs.token_counts is not None
+                    else self._vision_token_counts(coarse_inputs, model=self.base_vlm)
+                )
             counts = counts_tensor.tolist()
             coarse_tokens = []
             coarse_labels = [] if labels is not None else None
@@ -655,11 +661,17 @@ class VoVNet(nn.Module):
 
         if image_token_id is not None and full_inputs is not None:
             model = self.full_vlm if self.full_vlm is not None else self.base_vlm
-            counts_tensor = (
-                full_inputs.token_counts
-                if full_inputs.token_counts is not None
-                else self._vision_token_counts(full_inputs, model=model)
-            )
+            if full_inputs.image_grid_thw is not None:
+                grid = full_inputs.image_grid_thw
+                if grid.ndim == 1:
+                    grid = grid.unsqueeze(0)
+                counts_tensor = grid.long().prod(dim=-1)
+            else:
+                counts_tensor = (
+                    full_inputs.token_counts
+                    if full_inputs.token_counts is not None
+                    else self._vision_token_counts(full_inputs, model=model)
+                )
             counts = counts_tensor.tolist()
             full_tokens = []
             full_labels = [] if labels is not None else None
@@ -717,7 +729,6 @@ class VoVNet(nn.Module):
             grid = vision_inputs.image_grid_thw.to(dtype=torch.long)
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
-            grid = self._apply_merge_to_grid(grid, model=model)
             counts = grid.prod(dim=-1)
             return counts.clamp(min=1)
         pixel_values = vision_inputs.pixel_values
@@ -818,7 +829,10 @@ class VoVNet(nn.Module):
             grid = image_grid_thw
             if grid.ndim == 1:
                 grid = grid.unsqueeze(0)
-            merged_grid = self._apply_merge_to_grid(grid, model=model)
+            if self._should_use_merged_grid(model):
+                merged_grid = grid
+            else:
+                merged_grid = self._apply_merge_to_grid(grid, model=model)
             token_counts = merged_grid.long().prod(dim=-1)
             if self._should_use_merged_grid(model):
                 image_grid_thw = merged_grid
