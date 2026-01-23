@@ -47,6 +47,7 @@ class Trainer:
         gain_margin: float = 0.0,
         baseline_name: Optional[str] = None,
         finetune_pruning: bool = False,
+        cost_warmup_steps: int = 0,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -60,6 +61,8 @@ class Trainer:
         self.log_every = log_every
         self.save_every = save_every
         self.max_grad_norm = max_grad_norm
+        self.current_lambda_cost = float(lambda_cost)
+        self.cost_warmup_steps = max(0, int(cost_warmup_steps))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         action_names = {int(action): action.name.lower() for action in Action}
         self.train_profiler = BatchProfiler(profile_train, action_names=action_names)
@@ -141,11 +144,16 @@ class Trainer:
                             actions=actions,
                             labels=batch.get("labels"),
                         )
+                    lambda_cost = self.lambda_cost
+                    if self.cost_warmup_steps > 0 and self.lambda_cost > 0:
+                        progress = min(1.0, (global_step + 1) / self.cost_warmup_steps)
+                        lambda_cost = self.lambda_cost * progress
+                    self.current_lambda_cost = float(lambda_cost)
                     losses = compute_total_loss(
                         outputs["logits"],
                         outputs.get("labels"),
                         outputs["expected_cost"],
-                        self.lambda_cost,
+                        lambda_cost,
                         calibration_value=None,
                         lambda_cal=self.lambda_cal,
                         gain_pred=outputs.get("gain_pred"),
@@ -515,7 +523,7 @@ class Trainer:
             avg_losses.get("gain_loss", 0.0),
             lr,
             budget_text,
-            self.lambda_cost,
+            self.current_lambda_cost,
             action_entropy,
             action_rates.tolist(),
             vision_mean,

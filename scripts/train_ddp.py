@@ -749,6 +749,11 @@ def main() -> None:
                 actions, _, drop_images = resolve_baseline_actions(
                     stage_baseline, batch_size, batch["input_ids"].device
                 )
+                lambda_cost = stage_lambda_cost
+                if cfg.policy.cost_warmup_steps > 0 and stage_lambda_cost > 0:
+                    warmup = float(cfg.policy.cost_warmup_steps)
+                    progress = min(1.0, (stage_steps + 1) / warmup)
+                    lambda_cost = stage_lambda_cost * progress
                 is_last = step + 1 == steps_per_epoch
                 sync_grad = ((step + 1) % grad_accum == 0) or is_last
                 if distributed and isinstance(model, DDP) and not sync_grad:
@@ -780,7 +785,7 @@ def main() -> None:
                             outputs["logits"],
                             outputs.get("labels"),
                             outputs["expected_cost"],
-                            stage_lambda_cost,
+                            lambda_cost,
                             calibration_value=None,
                             lambda_cal=cfg.policy.calibration_lambda,
                             gain_pred=outputs.get("gain_pred"),
@@ -885,7 +890,7 @@ def main() -> None:
                         progress,
                         window_stats,
                         optimizer,
-                        stage_lambda_cost,
+                        lambda_cost,
                         train_profiler,
                         model,
                     )

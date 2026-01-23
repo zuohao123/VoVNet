@@ -61,6 +61,7 @@ class PolicyConfig:
     cost_c1: float = 1.0
     cost_c2: float = 4.0
     lambda_cost: float = 0.1
+    cost_warmup_steps: int = 0
     calibration_lambda: float = 0.0
     gain_supervision: bool = False
     gain_loss_type: str = "mse"
@@ -199,6 +200,8 @@ class Config:
             raise ValueError("policy_mode must be logits or gain")
         if self.policy.fallback_mode not in ("none", "coarse", "full"):
             raise ValueError("fallback_mode must be none, coarse, or full")
+        if self.policy.cost_warmup_steps < 0:
+            raise ValueError("policy.cost_warmup_steps must be >= 0")
         baseline = self.policy.baseline_name
         if baseline is not None:
             normalized = baseline.strip().lower()
@@ -405,6 +408,9 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.cost_c1 = _to_float(cfg.policy.cost_c1, "policy.cost_c1")
     cfg.policy.cost_c2 = _to_float(cfg.policy.cost_c2, "policy.cost_c2")
     cfg.policy.lambda_cost = _to_float(cfg.policy.lambda_cost, "policy.lambda_cost")
+    cfg.policy.cost_warmup_steps = _to_int(
+        cfg.policy.cost_warmup_steps, "policy.cost_warmup_steps"
+    )
     cfg.policy.calibration_lambda = _to_float(
         cfg.policy.calibration_lambda, "policy.calibration_lambda"
     )

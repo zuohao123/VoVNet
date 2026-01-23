@@ -1,6 +1,6 @@
-# Two-stage training capped at 5k steps per stage (balanced cost).
+# VoVNet training on MMBench+LLaVA only (no TextVQA).
 data:
-  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
+  train_jsonl: "data/processed/mmbench_llava/mmbench_llava_train.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
@@ -9,7 +9,7 @@ model:
   use_thinking_for_full: false
 
 training:
-  output_dir: "outputs/train_mmbench_llava_textvqa_vovnet_v2_5k_balanced"
+  output_dir: "outputs/train_mmbench_llava_vovnet_v2_2k5k"
   epochs: 2
   stage1_epochs: 1
   stage1_baseline_name: "always_full"
@@ -24,7 +24,7 @@ training:
   lr: 5e-5
   warmup_steps: 0
   max_grad_norm: 1.0
-  save_every: 5000
+  save_every: 2000
 
 policy:
   policy_mode: "gain"

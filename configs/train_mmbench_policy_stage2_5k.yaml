@@ -1,6 +1,6 @@
-# Two-stage training capped at 5k steps per stage (balanced cost).
+# Stage2 policy training on MMBench-only (resume from stage1 checkpoint).
 data:
-  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train.jsonl"
+  train_jsonl: "data/processed/mmbench_core/mmbench_core_train.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_dev.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
@@ -9,12 +9,12 @@ model:
   use_thinking_for_full: false
 
 training:
-  output_dir: "outputs/train_mmbench_llava_textvqa_vovnet_v2_5k_balanced"
-  epochs: 2
-  stage1_epochs: 1
+  output_dir: "outputs/train_mmbench_policy_stage2_5k"
+  epochs: 1
+  stage1_epochs: 0
   stage1_baseline_name: "always_full"
   stage1_lambda_cost: 0.0
-  stage1_max_steps: 2000
+  stage1_max_steps: 0
   stage2_max_steps: 5000
   per_device_batch_size: 1
   gradient_accumulation: 4
@@ -24,7 +24,7 @@ training:
   lr: 5e-5
   warmup_steps: 0
   max_grad_norm: 1.0
-  save_every: 5000
+  save_every: 1000
 
 policy:
   policy_mode: "gain"

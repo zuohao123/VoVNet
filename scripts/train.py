@@ -268,6 +268,7 @@ def main() -> None:
         gain_margin=cfg.policy.gain_margin,
         baseline_name=cfg.policy.baseline_name,
         finetune_pruning=cfg.policy.finetune_pruning,
+        cost_warmup_steps=cfg.policy.cost_warmup_steps,
     )
     trainer.train(cfg.training.epochs)
 
