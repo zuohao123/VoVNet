@@ -172,6 +172,7 @@ def build_stage_schedule(cfg: Config) -> List[Dict[str, Any]]:
                 "epochs": stage1_epochs,
                 "baseline_name": stage1_baseline,
                 "lambda_cost": stage1_lambda,
+                "max_steps": cfg.training.stage1_max_steps,
             }
         )
 
@@ -183,6 +184,7 @@ def build_stage_schedule(cfg: Config) -> List[Dict[str, Any]]:
                 "epochs": stage2_epochs,
                 "baseline_name": cfg.policy.baseline_name,
                 "lambda_cost": float(cfg.policy.lambda_cost),
+                "max_steps": cfg.training.stage2_max_steps,
             }
         )
     return stages
@@ -663,7 +665,13 @@ def main() -> None:
     autocast_ctx, scaler = _setup_autocast(mixed_precision)
     grad_accum = max(1, int(cfg.training.gradient_accumulation))
     steps_per_epoch = len(train_loader)
-    total_steps = steps_per_epoch * cfg.training.epochs
+    total_steps = 0
+    for stage in stages:
+        stage_max_steps = stage.get("max_steps")
+        if stage_max_steps is not None and stage_max_steps > 0:
+            total_steps += int(stage_max_steps)
+        else:
+            total_steps += int(stage.get("epochs", 0)) * steps_per_epoch
 
     action_names = {int(action): action.name.lower() for action in Action}
     train_profiler = BatchProfiler(cfg.training.profile, action_names=action_names)
@@ -700,6 +708,9 @@ def main() -> None:
         stage_epochs = int(stage["epochs"])
         stage_baseline = normalize_baseline_name(stage["baseline_name"])
         stage_lambda_cost = float(stage["lambda_cost"])
+        stage_max_steps = stage.get("max_steps")
+        if stage_max_steps is not None:
+            stage_max_steps = int(stage_max_steps)
         if (
             cfg.training.gradient_checkpointing
             and stage_name == "stage2_policy"
@@ -715,18 +726,22 @@ def main() -> None:
                 raw_model.base_vlm.disable_gradient_checkpointing()
         if rank == 0:
             logger.info(
-                "Starting %s: epochs=%s baseline=%s lambda_cost=%.4f",
+                "Starting %s: epochs=%s baseline=%s lambda_cost=%.4f max_steps=%s",
                 stage_name,
                 stage_epochs,
                 stage_baseline,
                 stage_lambda_cost,
+                stage_max_steps,
             )
+        stage_steps = 0
         for local_epoch in range(stage_epochs):
             epoch = epoch_idx + local_epoch
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
             model.train()
             for step, batch in enumerate(train_loader):
+                if stage_max_steps is not None and stage_steps >= stage_max_steps:
+                    break
                 if train_profiler.enabled:
                     train_profiler.start()
                 batch = _move_batch(batch, device)
@@ -901,6 +916,10 @@ def main() -> None:
                     logger.info("Saved checkpoint to %s", ckpt_path)
 
                 global_step += 1
+                stage_steps += 1
+
+            if stage_max_steps is not None and stage_steps >= stage_max_steps:
+                break
 
             if eval_loader is not None:
                 if distributed:

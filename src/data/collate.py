@@ -87,6 +87,8 @@ class VLMDataCollator:
                 context=context,
                 choices=choices_text,
             )
+            if choices_text and "answer:" in prompt.lower() and "letter" not in prompt.lower():
+                prompt = prompt.replace("Answer:", "Answer (letter only):", 1)
             if context and "{context}" not in self.prompt_template:
                 prompt = _append_before_answer(prompt, f"Context: {context}")
             if choices_text and "{choices}" not in self.prompt_template:

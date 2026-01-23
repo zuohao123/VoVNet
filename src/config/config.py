@@ -104,8 +104,10 @@ class TrainingConfig:
     gradient_accumulation: int = 4
     epochs: int = 1
     stage1_epochs: int = 0
+    stage1_max_steps: int | None = None
     stage1_baseline_name: str | None = None
     stage1_lambda_cost: float | None = None
+    stage2_max_steps: int | None = None
     lr: float = 5e-5
     weight_decay: float = 0.0
     warmup_steps: int = 0
@@ -173,6 +175,10 @@ class Config:
             raise ValueError("stage1_epochs must be >= 0")
         if self.training.stage1_epochs > self.training.epochs:
             raise ValueError("stage1_epochs must be <= total epochs")
+        if self.training.stage1_max_steps is not None and self.training.stage1_max_steps <= 0:
+            raise ValueError("stage1_max_steps must be > 0 when set")
+        if self.training.stage2_max_steps is not None and self.training.stage2_max_steps <= 0:
+            raise ValueError("stage2_max_steps must be > 0 when set")
         if self.training.stage1_baseline_name:
             stage1 = self.training.stage1_baseline_name.strip().lower()
             if stage1 not in {
@@ -372,8 +378,14 @@ def _coerce_types(cfg: Config) -> None:
     )
     cfg.training.epochs = _to_int(cfg.training.epochs, "training.epochs")
     cfg.training.stage1_epochs = _to_int(cfg.training.stage1_epochs, "training.stage1_epochs")
+    cfg.training.stage1_max_steps = _to_int(
+        cfg.training.stage1_max_steps, "training.stage1_max_steps", allow_none=True
+    )
     cfg.training.stage1_lambda_cost = _to_float(
         cfg.training.stage1_lambda_cost, "training.stage1_lambda_cost", allow_none=True
+    )
+    cfg.training.stage2_max_steps = _to_int(
+        cfg.training.stage2_max_steps, "training.stage2_max_steps", allow_none=True
     )
     cfg.training.log_every = _to_int(cfg.training.log_every, "training.log_every")
     cfg.training.save_every = _to_int(cfg.training.save_every, "training.save_every")

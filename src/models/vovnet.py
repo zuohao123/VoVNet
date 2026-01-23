@@ -128,6 +128,32 @@ class VoVNet(nn.Module):
                     return int(token_id)
         return None
 
+    def _get_vision_start_end_ids(self) -> Tuple[Optional[int], Optional[int]]:
+        tokenizer = self.base_vlm.tokenizer
+        if tokenizer is None:
+            return None, None
+        start_id = None
+        end_id = None
+        for token in getattr(tokenizer, "additional_special_tokens", []) or []:
+            lowered = token.lower()
+            if "vision_start" in lowered:
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                if token_id is not None:
+                    start_id = int(token_id)
+            elif "vision_end" in lowered:
+                token_id = tokenizer.convert_tokens_to_ids(token)
+                if token_id is not None:
+                    end_id = int(token_id)
+        if start_id is None:
+            token_id = tokenizer.convert_tokens_to_ids("<|vision_start|>")
+            if token_id is not None:
+                start_id = int(token_id)
+        if end_id is None:
+            token_id = tokenizer.convert_tokens_to_ids("<|vision_end|>")
+            if token_id is not None:
+                end_id = int(token_id)
+        return start_id, end_id
+
     def _strip_image_tokens(
         self,
         input_ids: Tensor,
@@ -135,6 +161,7 @@ class VoVNet(nn.Module):
         labels: Optional[Tensor],
         image_token_id: Optional[int],
     ) -> Tuple[List[List[int]], Optional[List[List[int]]]]:
+        vision_start_id, vision_end_id = self._get_vision_start_end_ids()
         token_lists: List[List[int]] = []
         label_lists: Optional[List[List[int]]] = [] if labels is not None else None
         for i in range(input_ids.size(0)):
@@ -146,6 +173,10 @@ class VoVNet(nn.Module):
             new_lbls: Optional[List[int]] = [] if labels is not None else None
             for idx, tok in enumerate(ids):
                 if image_token_id is not None and tok == image_token_id:
+                    continue
+                if vision_start_id is not None and tok == vision_start_id:
+                    continue
+                if vision_end_id is not None and tok == vision_end_id:
                     continue
                 new_ids.append(tok)
                 if new_lbls is not None and lbls is not None:
@@ -165,13 +196,17 @@ class VoVNet(nn.Module):
     ) -> Tuple[List[int], Optional[List[int]]]:
         if token_count <= 0:
             return tokens, labels
+        vision_start_id, vision_end_id = self._get_vision_start_end_ids()
         insert_pos = 0
         if bos_token_id is not None and tokens and tokens[0] == bos_token_id:
             insert_pos = 1
-        new_tokens = tokens[:insert_pos] + [image_token_id] * token_count + tokens[insert_pos:]
+        image_block = [image_token_id] * token_count
+        if vision_start_id is not None and vision_end_id is not None:
+            image_block = [vision_start_id] + image_block + [vision_end_id]
+        new_tokens = tokens[:insert_pos] + image_block + tokens[insert_pos:]
         if labels is None:
             return new_tokens, None
-        new_labels = labels[:insert_pos] + [-100] * token_count + labels[insert_pos:]
+        new_labels = labels[:insert_pos] + [-100] * len(image_block) + labels[insert_pos:]
         return new_tokens, new_labels
 
     def _pad_sequences(
@@ -743,6 +778,12 @@ class VoVNet(nn.Module):
             temporal_merge = temporal_merge[0] if temporal_merge else None
         spatial_merge = int(spatial_merge) if spatial_merge else 1
         temporal_merge = int(temporal_merge) if temporal_merge else 1
+        if spatial_merge <= 1 and temporal_merge <= 1:
+            model_type = getattr(config, "model_type", "") if config is not None else ""
+            name_hint = getattr(target_model, "model_name", "")
+            hint = f"{model_type} {name_hint}".lower()
+            if "qwen3_vl" in hint or "qwen2_vl" in hint:
+                spatial_merge = 2
         if spatial_merge <= 1 and temporal_merge <= 1:
             return grid
         merged = grid.clone()
