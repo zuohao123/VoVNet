@@ -10,12 +10,12 @@ model:
 
 training:
   output_dir: "outputs/train_mmbench_llava_textvqa_vovnet_v3_2k5k"
-  epochs: 2
+  epochs: 8
   stage1_epochs: 1
   stage1_baseline_name: "always_full"
   stage1_lambda_cost: 0.0
   stage1_max_steps: 2000
-  stage2_max_steps: 20001
+  stage2_max_steps: 40001
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
@@ -30,15 +30,15 @@ policy:
   policy_mode: "gain"
   gain_supervision: true
   gain_loss_type: "rank_hinge"
-  gain_loss_weight: 4.0
-  gain_margin: 0.1
-  lambda_cost: 0.0005
+  gain_loss_weight: 6.0
+  gain_margin: 0.2
+  lambda_cost: 0.001
   cost_scale: 0.05
   cost_warmup_steps: 6000
-  gumbel_tau: 2.0
+  gumbel_tau: 1.0
   use_straight_through: true
-  entropy_weight: 0.05
-  explore_prob: 0.2
+  entropy_weight: 0.005
+  explore_prob: 0.05
 
 vision_budget:
   coarse_long_side: 224

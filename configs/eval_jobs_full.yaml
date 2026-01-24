@@ -133,6 +133,28 @@ jobs:
     output_dir: outputs/eval/full/mmbench_dev_random_fuzzy
     log: logs/full/mmbench_dev_random_fuzzy.out
 
+  - name: mmbench_random_bucketed_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_bucketed.yaml
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_random_bucketed_exact
+    output_dir: outputs/eval/full/mmbench_dev_random_bucketed_exact
+    log: logs/full/mmbench_dev_random_bucketed_exact.out
+
+  - name: mmbench_random_bucketed_fuzzy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_random_bucketed.yaml
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_random_bucketed_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_random_bucketed_fuzzy
+    log: logs/full/mmbench_dev_random_bucketed_fuzzy.out
+
   - name: mmbench_threshold_exact
     cmd: >-
       python -m scripts.pareto_threshold
@@ -158,6 +180,32 @@ jobs:
       --output_dir outputs/eval/full/mmbench_dev_threshold_fuzzy
     output_dir: outputs/eval/full/mmbench_dev_threshold_fuzzy
     log: logs/full/mmbench_dev_threshold_fuzzy.out
+
+  - name: mmbench_threshold_margin_exact
+    cmd: >-
+      python -m scripts.pareto_threshold
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
+      --uncertainty margin --vision full
+      --output_dir outputs/eval/full/mmbench_dev_threshold_margin_exact
+    output_dir: outputs/eval/full/mmbench_dev_threshold_margin_exact
+    log: logs/full/mmbench_dev_threshold_margin_exact.out
+
+  - name: mmbench_threshold_margin_fuzzy
+    cmd: >-
+      python -m scripts.pareto_threshold
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_FUZZY
+      --checkpoint $CKPT
+      --thresholds 0.05 0.10 0.20 0.30 0.40 0.50
+      --uncertainty margin --vision full
+      --output_dir outputs/eval/full/mmbench_dev_threshold_margin_fuzzy
+    output_dir: outputs/eval/full/mmbench_dev_threshold_margin_fuzzy
+    log: logs/full/mmbench_dev_threshold_margin_fuzzy.out
 
   - name: mmbench_resolution_exact
     cmd: >-
