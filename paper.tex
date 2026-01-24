@@ -464,7 +464,7 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
 \end{figure}
 
 \begin{table}[t]
-  \caption{Main results on MMBench-dev (replace TBD with numbers). N/C/F denotes action ratios; Lat. is latency.}
+  \caption{Main results on MMBench-dev (Quick-200 sanity; replace with full runs). N/C/F denotes action ratios; Lat. is P50 ms.}
   \label{tab:main}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -472,16 +472,16 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
     \toprule
     Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F & Lat.$\downarrow$ \\
     \midrule
-    Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
-    Always-Coarse & \textit{TBD} & \textit{TBD} & 0/100/0 & \textit{TBD} \\
-    No-Vision & \textit{TBD} & 0 & 100/0/0 & \textit{TBD} \\
+    Always-Full & 0.510 & 4.743 & 0/0/100 & 230.5 \\
+    Always-Coarse & 0.505 & 3.573 & 0/100/0 & 234.4 \\
+    No-Vision & 0.375 & 0 & 100/0/0 & 57.5 \\
     Threshold (best) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Random Matched & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Res. Scaling (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
+    Random Matched & 0.435 & 2.964 & 29/37/34 & 210.0 \\
+    Res. Scaling (best) & 0.505 & 3.573 & 0/0/100 & 1607.5 \\
     Token Pruning (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
     Token Merge (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
     Multi-Gran. (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
-    \method (ours) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    \method (ours) & 0.385 & 0.981 & 78/8/14 & 122.9 \\
     \bottomrule
   \end{tabular}
   }
@@ -557,7 +557,7 @@ We also report the effect of KV-cache reuse between the text-first and condition
 and ensure all baselines share identical cache settings.
 
 \begin{table}[t]
-  \caption{System profiling on MMBench-dev (replace TBD with numbers).}
+  \caption{System profiling on MMBench-dev (Quick-200 sanity; replace with full runs).}
   \label{tab:profiling}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -565,9 +565,9 @@ and ensure all baselines share identical cache settings.
     \toprule
     Method & P50$\downarrow$ & P90$\downarrow$ & Mem$\downarrow$ & Tok/s$\uparrow$ \\
     \midrule
-    Always-Full & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Always-Coarse & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    \method (ours) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Always-Full & 230.5 & 1862.1 & 17090 & \textit{TBD} \\
+    Always-Coarse & 234.4 & 1800.1 & 17090 & \textit{TBD} \\
+    \method (ours) & 122.9 & 1587.1 & 16977 & \textit{TBD} \\
     \bottomrule
   \end{tabular}
   }
