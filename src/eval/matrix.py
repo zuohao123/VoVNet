@@ -102,9 +102,14 @@ def _decode_from_logits(
     logits: torch.Tensor, labels: torch.Tensor, tokenizer: Any
 ) -> List[str]:
     preds: List[str] = []
-    pred_ids = logits.argmax(dim=-1)
+    if logits.size(1) <= 1 or labels.size(1) <= 1:
+        return [""] * logits.size(0)
+    # Align logits with labels: LM logits at t predict token t+1.
+    shift_logits = logits[:, :-1, :]
+    shift_labels = labels[:, 1:]
+    pred_ids = shift_logits.argmax(dim=-1)
     for i in range(pred_ids.size(0)):
-        mask = labels[i] != -100
+        mask = shift_labels[i] != -100
         answer_ids = pred_ids[i][mask]
         text = tokenizer.decode(answer_ids, skip_special_tokens=True)
         preds.append(text.strip())
@@ -865,11 +870,13 @@ def evaluate_dataset(
                 total_remaining_tokens += remaining_tokens.sum().item()
             labels_for_ece = outputs.get("labels") if outputs.get("labels") is not None else batch.get("labels")
             if labels_for_ece is not None:
-                if labels_for_ece.shape == outputs["logits"].shape[:-1]:
-                    mask = labels_for_ece.ne(-100)
+                if labels_for_ece.shape == outputs["logits"].shape[:-1] and outputs["logits"].size(1) > 1:
+                    shift_logits = outputs["logits"][:, :-1, :]
+                    shift_labels = labels_for_ece[:, 1:]
+                    mask = shift_labels.ne(-100)
                     if mask.any():
-                        flat_logits = outputs["logits"][mask]
-                        flat_labels = labels_for_ece[mask]
+                        flat_logits = shift_logits[mask]
+                        flat_labels = shift_labels[mask]
                         probs = torch.softmax(flat_logits, dim=-1)
                         ece, _ = expected_calibration_error(probs, flat_labels)
                         total_ece += float(ece.item()) * int(mask.sum().item())
