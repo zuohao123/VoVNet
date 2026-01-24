@@ -101,6 +101,29 @@ def load_eval_checkpoint(
 def _decode_from_logits(
     logits: torch.Tensor, labels: torch.Tensor, tokenizer: Any
 ) -> List[str]:
+    def _letter_token_ids() -> List[tuple[str, int]]:
+        letters = "ABCDEFGH"
+        pairs: List[tuple[str, int]] = []
+        for letter in letters:
+            for variant in (f" {letter}", letter):
+                try:
+                    ids = tokenizer.encode(variant, add_special_tokens=False)
+                except Exception:
+                    ids = []
+                if len(ids) == 1:
+                    pairs.append((letter, ids[0]))
+                    break
+        # de-dup token ids while keeping letter order
+        seen = set()
+        uniq: List[tuple[str, int]] = []
+        for letter, tid in pairs:
+            if tid in seen:
+                continue
+            seen.add(tid)
+            uniq.append((letter, tid))
+        return uniq
+
+    letter_ids = _letter_token_ids()
     preds: List[str] = []
     if logits.size(1) <= 1 or labels.size(1) <= 1:
         return [""] * logits.size(0)
@@ -111,8 +134,16 @@ def _decode_from_logits(
     for i in range(pred_ids.size(0)):
         mask = shift_labels[i] != -100
         answer_ids = pred_ids[i][mask]
-        text = tokenizer.decode(answer_ids, skip_special_tokens=True)
-        preds.append(text.strip())
+        text = tokenizer.decode(answer_ids, skip_special_tokens=True).strip()
+        if int(mask.sum().item()) == 1 and letter_ids:
+            # For MC labels (single token), force a letter prediction if needed.
+            if len(text) != 1 or text.upper() not in "ABCDEFGH":
+                pos = int(torch.nonzero(mask, as_tuple=False)[0].item())
+                scores = {}
+                for letter, tid in letter_ids:
+                    scores[letter] = float(shift_logits[i, pos, tid].item())
+                text = max(scores.items(), key=lambda x: x[1])[0]
+        preds.append(text)
     return preds
 
 
