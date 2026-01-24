@@ -6,6 +6,9 @@ env:
   EVAL_LIMIT: configs/eval_quick_500.yaml
   MMBENCH_DATASET_EXACT: configs/eval_mmbench_dev_text.yaml
   MMBENCH_DATASET_FUZZY: configs/eval_mmbench_dev_text_fuzzy.yaml
+  MMMU_DATASET_CONFIG: configs/eval_mmmu_text.yaml
+  TEXTVQA_DATASET_CONFIG: configs/eval_textvqa.yaml
+  ORACLE_MAX_SAMPLES: "500"
   CKPT: outputs/train_mmbench_llava_textvqa_vovnet_stage2/checkpoint-10000.pt
 jobs:
   - name: mmbench_policy_exact
@@ -29,6 +32,18 @@ jobs:
       --output_dir outputs/eval/full/mmbench_dev_policy_fuzzy
     output_dir: outputs/eval/full/mmbench_dev_policy_fuzzy
     log: logs/full/mmbench_dev_policy_fuzzy.out
+
+  - name: mmbench_policy_pareto_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --pareto 0 0.01 0.02 0.05 0.1
+      --output_dir outputs/eval/full/mmbench_dev_policy_pareto_exact
+    output_dir: outputs/eval/full/mmbench_dev_policy_pareto_exact
+    log: logs/full/mmbench_dev_policy_pareto_exact.out
 
   - name: mmbench_full_exact
     cmd: >-
@@ -245,3 +260,69 @@ jobs:
       --output_dir outputs/eval/full/mmbench_dev_granularity_fuzzy
     output_dir: outputs/eval/full/mmbench_dev_granularity_fuzzy
     log: logs/full/mmbench_dev_granularity_fuzzy.out
+
+  - name: mmbench_policy_fallback_full_exact
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/eval_fallback_full.yaml
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmbench_dev_policy_fallback_full_exact
+    output_dir: outputs/eval/full/mmbench_dev_policy_fallback_full_exact
+    log: logs/full/mmbench_dev_policy_fallback_full_exact.out
+
+  - name: mmbench_oracle_analysis
+    cmd: >-
+      python scripts/oracle_action.py
+      --config $CFG_BASE --config $CFG_TRAIN
+      --dataset_config $MMBENCH_DATASET_EXACT
+      --checkpoint $CKPT
+      --max_samples $ORACLE_MAX_SAMPLES
+      --output_dir outputs/eval/full/mmbench_dev_oracle
+    output_dir: outputs/eval/full/mmbench_dev_oracle
+    log: logs/full/mmbench_dev_oracle.out
+
+  - name: mmmu_policy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMMU_DATASET_CONFIG
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmmu_policy
+    output_dir: outputs/eval/full/mmmu_policy
+    log: logs/full/mmmu_policy.out
+
+  - name: mmmu_full
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $MMMU_DATASET_CONFIG
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/mmmu_full
+    output_dir: outputs/eval/full/mmmu_full
+    log: logs/full/mmmu_full.out
+
+  - name: textvqa_policy
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $TEXTVQA_DATASET_CONFIG
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/textvqa_policy
+    output_dir: outputs/eval/full/textvqa_policy
+    log: logs/full/textvqa_policy.out
+
+  - name: textvqa_full
+    cmd: >-
+      python -m scripts.eval
+      --config $CFG_BASE --config $CFG_TRAIN --config configs/baseline_always_full.yaml
+      --config $EVAL_SINGLE --config $EVAL_PROFILE --config $EVAL_LIMIT
+      --dataset_config $TEXTVQA_DATASET_CONFIG
+      --checkpoint $CKPT
+      --output_dir outputs/eval/full/textvqa_full
+    output_dir: outputs/eval/full/textvqa_full
+    log: logs/full/textvqa_full.out

@@ -1,0 +1,3 @@
+policy:
+  fallback_mode: "full"
+  fallback_entropy_threshold: 0.3
