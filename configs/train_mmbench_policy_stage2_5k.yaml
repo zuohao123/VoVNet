@@ -27,9 +27,14 @@ training:
   save_every: 1000
 
 policy:
-  policy_mode: "gain"
-  gain_supervision: true
-  gain_loss_weight: 2.0
+  policy_mode: "logits"
+  gain_supervision: false
+  gain_loss_weight: 0.0
+  policy_target_mode: "loss_margin"
+  policy_ce_weight: 1.0
+  policy_delta_start: 0.0
+  policy_delta_end: 0.2
+  policy_delta_warmup_steps: 1000
   lambda_cost: 0.002
   cost_scale: 0.05
   cost_warmup_steps: 1000

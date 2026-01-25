@@ -68,6 +68,11 @@ class PolicyConfig:
     gain_loss_type: str = "mse"
     gain_loss_weight: float = 0.0
     gain_margin: float = 0.0
+    policy_target_mode: str = "none"
+    policy_ce_weight: float = 0.0
+    policy_delta_start: float = 0.0
+    policy_delta_end: float = 0.0
+    policy_delta_warmup_steps: int = 0
     explore_prob: float = 0.0
 
 
@@ -206,6 +211,14 @@ class Config:
             raise ValueError("policy.cost_warmup_steps must be >= 0")
         if self.policy.entropy_weight < 0:
             raise ValueError("policy.entropy_weight must be >= 0")
+        if self.policy.policy_target_mode not in ("none", "loss_margin"):
+            raise ValueError("policy.policy_target_mode must be none or loss_margin")
+        if self.policy.policy_ce_weight < 0:
+            raise ValueError("policy.policy_ce_weight must be >= 0")
+        if self.policy.policy_delta_warmup_steps < 0:
+            raise ValueError("policy.policy_delta_warmup_steps must be >= 0")
+        if self.policy.policy_delta_start < 0 or self.policy.policy_delta_end < 0:
+            raise ValueError("policy.policy_delta_start/end must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name

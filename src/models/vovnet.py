@@ -256,6 +256,7 @@ class VoVNet(nn.Module):
         images: Optional[List[Image.Image]] = None,
         labels: Optional[Tensor] = None,
         compute_gain: bool = False,
+        compute_loss_triplet: bool = False,
     ) -> Dict[str, Any]:
         """Run text-first pass, choose action, and optionally call vision."""
         if self.training and not self.use_straight_through and images is not None:
@@ -307,8 +308,9 @@ class VoVNet(nn.Module):
             fallback_entropy_trigger = zeros
             fallback_margin_trigger = zeros
         gain_true = None
-        if compute_gain and text_labels is not None:
-            gain_true = self._compute_gain_targets(
+        loss_triplet = None
+        if (compute_gain or compute_loss_triplet) and text_labels is not None:
+            loss_triplet = self._compute_loss_triplet(
                 input_ids=text_input_ids,
                 attention_mask=text_attention_mask,
                 images=images,
@@ -317,6 +319,9 @@ class VoVNet(nn.Module):
                 coarse_inputs=coarse_inputs,
                 full_inputs=full_inputs,
             )
+        if compute_gain and loss_triplet is not None:
+            loss_no, loss_coarse, loss_full = loss_triplet.unbind(dim=-1)
+            gain_true = torch.stack([loss_no - loss_coarse, loss_no - loss_full], dim=-1)
 
         labels_for_loss = text_labels
         if self.training and not self.use_straight_through:
@@ -353,6 +358,7 @@ class VoVNet(nn.Module):
             "token_count_full": token_count_full,
             "gain_pred": gain_pred,
             "gain_true": gain_true,
+            "loss_triplet": loss_triplet,
             "actions_raw": actions_raw,
             "fallback_mask": fallback_mask,
             "fallback_entropy_trigger": fallback_entropy_trigger,
@@ -512,10 +518,33 @@ class VoVNet(nn.Module):
         coarse_inputs: Optional[VisionInputs],
         full_inputs: Optional[VisionInputs],
     ) -> Tensor:
+        loss_triplet = self._compute_loss_triplet(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            images=images,
+            labels=labels,
+            text_outputs=text_outputs,
+            coarse_inputs=coarse_inputs,
+            full_inputs=full_inputs,
+        )
+        loss_no, loss_coarse, loss_full = loss_triplet.unbind(dim=-1)
+        gain_coarse = loss_no - loss_coarse
+        gain_full = loss_no - loss_full
+        return torch.stack([gain_coarse, gain_full], dim=-1)
+
+    def _compute_loss_triplet(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        images: Optional[List[Image.Image]],
+        labels: Tensor,
+        text_outputs: VLMOutputs,
+        coarse_inputs: Optional[VisionInputs],
+        full_inputs: Optional[VisionInputs],
+    ) -> Tensor:
         if images is None:
             loss_no = self._per_sample_loss(text_outputs.logits.detach(), labels)
-            zeros = torch.zeros_like(loss_no)
-            return torch.stack([zeros, zeros], dim=-1)
+            return torch.stack([loss_no, loss_no, loss_no], dim=-1)
 
         if coarse_inputs is None or full_inputs is None:
             _, _, coarse_inputs, full_inputs = self._prepare_token_counts(
@@ -557,9 +586,7 @@ class VoVNet(nn.Module):
             loss_coarse = self._per_sample_loss(coarse_logits, coarse_labels)
             loss_full = self._per_sample_loss(full_logits, full_labels)
 
-        gain_coarse = loss_no - loss_coarse
-        gain_full = loss_no - loss_full
-        return torch.stack([gain_coarse, gain_full], dim=-1)
+        return torch.stack([loss_no, loss_coarse, loss_full], dim=-1)
 
     @staticmethod
     def _per_sample_loss(logits: Tensor, labels: Tensor) -> Tensor:

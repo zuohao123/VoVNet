@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from src.baselines import normalize_baseline_name, resolve_baseline_actions
 from src.eval.metrics import exact_match_score
-from src.training.losses import compute_total_loss
+from src.training.losses import compute_policy_targets, compute_total_loss
 from src.utils.logging import setup_logging
 from src.utils.profiling import BatchProfiler
 from src.utils.stats import pearsonr, spearmanr
@@ -46,6 +46,11 @@ class Trainer:
         gain_loss_weight: float = 0.0,
         gain_margin: float = 0.0,
         entropy_weight: float = 0.0,
+        policy_target_mode: str = "none",
+        policy_ce_weight: float = 0.0,
+        policy_delta_start: float = 0.0,
+        policy_delta_end: float = 0.0,
+        policy_delta_warmup_steps: int = 0,
         baseline_name: Optional[str] = None,
         finetune_pruning: bool = False,
         cost_warmup_steps: int = 0,
@@ -73,6 +78,11 @@ class Trainer:
         self.gain_loss_weight = gain_loss_weight
         self.gain_margin = gain_margin
         self.entropy_weight = float(entropy_weight)
+        self.policy_target_mode = policy_target_mode
+        self.policy_ce_weight = float(policy_ce_weight)
+        self.policy_delta_start = float(policy_delta_start)
+        self.policy_delta_end = float(policy_delta_end)
+        self.policy_delta_warmup_steps = max(0, int(policy_delta_warmup_steps))
         self.baseline_name = normalize_baseline_name(baseline_name)
         self.finetune_pruning = finetune_pruning
 
@@ -119,6 +129,7 @@ class Trainer:
             "calibration_loss": 0.0,
             "gain_loss": 0.0,
             "entropy_loss": 0.0,
+            "policy_loss": 0.0,
         }
         for epoch in range(epochs):
             self.model.train()
@@ -137,6 +148,7 @@ class Trainer:
                             images=batch.get("images"),
                             labels=batch.get("labels"),
                             compute_gain=self.gain_supervision,
+                            compute_loss_triplet=self.policy_target_mode != "none",
                         )
                     else:
                         images = None if drop_images else batch.get("images")
@@ -152,6 +164,28 @@ class Trainer:
                         progress = min(1.0, (global_step + 1) / self.cost_warmup_steps)
                         lambda_cost = self.lambda_cost * progress
                     self.current_lambda_cost = float(lambda_cost)
+                    policy_targets = None
+                    if actions is None and self.policy_target_mode != "none":
+                        loss_triplet = outputs.get("loss_triplet")
+                        if loss_triplet is not None:
+                            if self.policy_delta_warmup_steps > 0:
+                                progress = min(
+                                    1.0,
+                                    (global_step + 1) / self.policy_delta_warmup_steps,
+                                )
+                                policy_delta = self.policy_delta_start + progress * (
+                                    self.policy_delta_end - self.policy_delta_start
+                                )
+                            else:
+                                policy_delta = self.policy_delta_end
+                            if self.policy_target_mode == "loss_margin":
+                                policy_targets = compute_policy_targets(
+                                    loss_triplet, policy_delta
+                                )
+                            else:
+                                raise ValueError(
+                                    f"Unknown policy_target_mode: {self.policy_target_mode}"
+                                )
                     losses = compute_total_loss(
                         outputs["logits"],
                         outputs.get("labels"),
@@ -159,6 +193,9 @@ class Trainer:
                         lambda_cost,
                         action_probs=outputs.get("action_probs"),
                         lambda_entropy=self.entropy_weight,
+                        action_logits=outputs.get("action_logits"),
+                        action_targets=policy_targets,
+                        lambda_policy=self.policy_ce_weight,
                         calibration_value=None,
                         lambda_cal=self.lambda_cal,
                         gain_pred=outputs.get("gain_pred"),
@@ -200,6 +237,9 @@ class Trainer:
                 window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
                 window_losses["entropy_loss"] += float(
                     losses.get("entropy_loss", 0.0).item()
+                ) * batch_size
+                window_losses["policy_loss"] += float(
+                    losses.get("policy_loss", 0.0).item()
                 ) * batch_size
 
                 if global_step % self.log_every == 0:
@@ -508,7 +548,8 @@ class Trainer:
             (
                 "epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
                 "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
-                "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f avg_gain=%.4f "
+                "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f "
+                "avg_gain=%.4f avg_policy=%.4f "
                 "lr=%.6g budget=%s lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
                 "vision_tokens=%.2f token_count_coarse=%.2f token_count_full=%.2f "
                 "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
@@ -529,6 +570,7 @@ class Trainer:
             avg_losses["cost_loss"],
             avg_losses.get("calibration_loss", 0.0),
             avg_losses.get("gain_loss", 0.0),
+            avg_losses.get("policy_loss", 0.0),
             lr,
             budget_text,
             self.current_lambda_cost,

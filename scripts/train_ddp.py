@@ -29,7 +29,7 @@ from src.models.base_vlm import BaseVLM
 from src.models.uncertainty import expected_calibration_error
 from src.models.vision_budget import VisionBudgetController
 from src.models.vovnet import Action, VoVNet
-from src.training.losses import compute_total_loss
+from src.training.losses import compute_policy_targets, compute_total_loss
 from src.training.schedulers import build_scheduler
 from src.training.trainer import _compute_ece, _format_budget, _format_duration
 from src.utils.logging import setup_logging
@@ -315,7 +315,8 @@ def _log_step(
         (
             "stage=%s epoch=%s/%s step=%s global_step=%s progress=%s eta=%s elapsed=%s "
             "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
-            "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f avg_gain=%.4f "
+            "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f "
+            "avg_gain=%.4f avg_policy=%.4f "
             "lr=%.6g budget=%s lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
             "vision_tokens=%.2f token_count_coarse=%.2f token_count_full=%.2f "
             "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
@@ -337,6 +338,7 @@ def _log_step(
         avg_losses["cost_loss"],
         avg_losses.get("calibration_loss", 0.0),
         avg_losses.get("gain_loss", 0.0),
+        avg_losses.get("policy_loss", 0.0),
         lr,
         budget_text,
         lambda_cost,
@@ -702,6 +704,7 @@ def main() -> None:
         "calibration_loss": 0.0,
         "gain_loss": 0.0,
         "entropy_loss": 0.0,
+        "policy_loss": 0.0,
     }
 
     epoch_idx = 0
@@ -766,12 +769,14 @@ def main() -> None:
                 with sync_ctx:
                     with autocast_ctx:
                         if actions is None:
+                            compute_loss_triplet = cfg.policy.policy_target_mode != "none"
                             outputs = model(
                                 input_ids=batch["input_ids"],
                                 attention_mask=batch["attention_mask"],
                                 images=batch.get("images"),
                                 labels=batch.get("labels"),
                                 compute_gain=cfg.policy.gain_supervision,
+                                compute_loss_triplet=compute_loss_triplet,
                             )
                         else:
                             images = None if drop_images else batch.get("images")
@@ -783,6 +788,30 @@ def main() -> None:
                                 actions=actions,
                                 labels=batch.get("labels"),
                             )
+                        policy_targets = None
+                        if actions is None and cfg.policy.policy_target_mode != "none":
+                            loss_triplet = outputs.get("loss_triplet")
+                            if loss_triplet is not None:
+                                if cfg.policy.policy_delta_warmup_steps > 0:
+                                    progress = min(
+                                        1.0,
+                                        (stage_steps + 1)
+                                        / float(cfg.policy.policy_delta_warmup_steps),
+                                    )
+                                    policy_delta = cfg.policy.policy_delta_start + progress * (
+                                        cfg.policy.policy_delta_end
+                                        - cfg.policy.policy_delta_start
+                                    )
+                                else:
+                                    policy_delta = cfg.policy.policy_delta_end
+                                if cfg.policy.policy_target_mode == "loss_margin":
+                                    policy_targets = compute_policy_targets(
+                                        loss_triplet, policy_delta
+                                    )
+                                else:
+                                    raise ValueError(
+                                        f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
+                                    )
                         losses = compute_total_loss(
                             outputs["logits"],
                             outputs.get("labels"),
@@ -790,6 +819,9 @@ def main() -> None:
                             lambda_cost,
                             action_probs=outputs.get("action_probs"),
                             lambda_entropy=cfg.policy.entropy_weight,
+                            action_logits=outputs.get("action_logits"),
+                            action_targets=policy_targets,
+                            lambda_policy=cfg.policy.policy_ce_weight,
                             calibration_value=None,
                             lambda_cal=cfg.policy.calibration_lambda,
                             gain_pred=outputs.get("gain_pred"),
@@ -852,6 +884,9 @@ def main() -> None:
                 window_losses["gain_loss"] += float(losses["gain_loss"].item()) * batch_size
                 window_losses["entropy_loss"] += float(
                     losses.get("entropy_loss", 0.0).item()
+                ) * batch_size
+                window_losses["policy_loss"] += float(
+                    losses.get("policy_loss", 0.0).item()
                 ) * batch_size
 
                 if global_step % cfg.training.log_every == 0 and rank == 0:

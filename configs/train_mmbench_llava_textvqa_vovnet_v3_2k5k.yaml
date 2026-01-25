@@ -27,13 +27,18 @@ training:
   save_every: 2000
 
 policy:
-  policy_mode: "gain"
-  gain_supervision: true
+  policy_mode: "logits"
+  gain_supervision: false
   gain_loss_type: "rank_hinge"
-  gain_loss_weight: 4.0
-  gain_margin: 0.1
-  lambda_cost: 0.01
-  cost_scale: 0.1
+  gain_loss_weight: 0.0
+  gain_margin: 0.2
+  policy_target_mode: "loss_margin"
+  policy_ce_weight: 1.0
+  policy_delta_start: 0.0
+  policy_delta_end: 0.2
+  policy_delta_warmup_steps: 15000
+  lambda_cost: 0.005
+  cost_scale: 0.05
   cost_warmup_steps: 15000
   gumbel_tau: 1.2
   use_straight_through: true

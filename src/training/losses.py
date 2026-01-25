@@ -7,6 +7,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from src.models.vovnet import Action
 
 def compute_task_loss(logits: Tensor, labels: Tensor | None) -> Tensor:
     """Compute token-level cross entropy loss."""
@@ -40,6 +41,25 @@ def compute_entropy_loss(
         return torch.tensor(0.0, device=device)
     entropy = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1).mean()
     return -lambda_entropy * entropy
+
+
+def compute_policy_targets(loss_triplet: Tensor, delta: float) -> Tensor:
+    """Select action targets from per-action losses with a tolerance margin."""
+    loss_no, loss_coarse, loss_full = loss_triplet.unbind(dim=-1)
+    target = torch.full(loss_no.shape, Action.FULL_VISION, device=loss_no.device, dtype=torch.long)
+    target[loss_coarse <= loss_full + float(delta)] = Action.COARSE_VISION
+    target[loss_no <= loss_full + float(delta)] = Action.NO_VISION
+    return target
+
+
+def compute_policy_loss(
+    action_logits: Tensor | None, action_targets: Tensor | None
+) -> Tensor:
+    """Compute policy cross-entropy loss over action logits."""
+    if action_logits is None or action_targets is None:
+        device = action_logits.device if action_logits is not None else torch.device("cpu")
+        return torch.tensor(0.0, device=device)
+    return F.cross_entropy(action_logits, action_targets)
 
 
 def compute_gain_loss(
@@ -82,6 +102,9 @@ def compute_total_loss(
     lambda_cost: float,
     action_probs: Tensor | None = None,
     lambda_entropy: float = 0.0,
+    action_logits: Tensor | None = None,
+    action_targets: Tensor | None = None,
+    lambda_policy: float = 0.0,
     calibration_value: Tensor | None = None,
     lambda_cal: float = 0.0,
     gain_pred: Tensor | None = None,
@@ -105,7 +128,15 @@ def compute_total_loss(
         margin=gain_margin,
     )
     entropy_loss = compute_entropy_loss(action_probs, lambda_entropy)
-    total_loss = task_loss + cost_loss + cal_loss + lambda_gain * gain_loss + entropy_loss
+    policy_loss = compute_policy_loss(action_logits, action_targets)
+    total_loss = (
+        task_loss
+        + cost_loss
+        + cal_loss
+        + lambda_gain * gain_loss
+        + entropy_loss
+        + lambda_policy * policy_loss
+    )
     return {
         "total_loss": total_loss,
         "task_loss": task_loss,
@@ -113,4 +144,5 @@ def compute_total_loss(
         "calibration_loss": cal_loss,
         "gain_loss": gain_loss,
         "entropy_loss": entropy_loss,
+        "policy_loss": policy_loss,
     }
