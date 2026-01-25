@@ -217,8 +217,6 @@ class Config:
             raise ValueError("policy.policy_ce_weight must be >= 0")
         if self.policy.policy_delta_warmup_steps < 0:
             raise ValueError("policy.policy_delta_warmup_steps must be >= 0")
-        if self.policy.policy_delta_start < 0 or self.policy.policy_delta_end < 0:
-            raise ValueError("policy.policy_delta_start/end must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name
