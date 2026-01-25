@@ -86,7 +86,7 @@ This unconditional vision usage wastes compute and increases latency.
 We propose \method, a cost-aware inference framework that estimates the per-instance value of vision and chooses among discrete visual budgets:
 skip vision, invoke a coarse budget, or allocate full vision.
 The policy is trained end-to-end with an explicit accuracy--cost objective and optional gain supervision, yielding controllable Pareto trade-offs.
-We evaluate on MMBench, MMMU, and TextVQA under a unified accuracy--cost protocol (consistent prompts/decoding/cost accounting),
+We evaluate on MMBench~\cite{liu2024mmbench}, MMMU~\cite{yue2023mmmu}, and TextVQA~\cite{singh2019textvqa} under a unified accuracy--cost protocol (consistent prompts/decoding/cost accounting),
 analyze action ratios and system profiling, and compare against fixed-budget, threshold-based, random-matched, and token-reduction baselines.
 \end{abstract}
 
@@ -96,7 +96,7 @@ analyze action ratios and system profiling, and compare against fixed-budget, th
 \section{Introduction}
 \label{sec:intro}
 
-Large vision-language models (VLMs) such as Flamingo, BLIP-2, PaLI, LLaVA, and Qwen-VL~\cite{alayrac2022flamingo,li2023blip2,chen2022pali,liu2023llava,bai2023qwenvl} have become a standard interface for multimodal reasoning, but their inference pipelines are often \emph{compute-oblivious}:
+Large vision-language models (VLMs) such as Flamingo, BLIP-2, PaLI, InstructBLIP, MiniGPT-4, IDEFICS, LLaVA, and Qwen-VL~\cite{alayrac2022flamingo,li2023blip2,chen2022pali,dai2023instructblip,zhu2023minigpt4,laurencon2023idefics,liu2023llava,bai2023qwenvl} have become a standard interface for multimodal reasoning, but their inference pipelines are often \emph{compute-oblivious}:
 the vision encoder is invoked whenever an image is present, regardless of whether the question actually requires visual evidence.
 In practical deployments, this ``always-look'' behavior is costly.
 Vision encoding can dominate latency, constrain batch size due to memory pressure, and reduce throughput---especially when image resolution or visual token count is high.
@@ -142,7 +142,7 @@ We position our approach as addressing a distinct but orthogonal question:
 \subsection{Vision-Language Models and Instruction Tuning}
 
 Modern VLMs combine a vision encoder with a large language model, enabling image-conditioned generation and reasoning.
-Representative systems include Flamingo~\cite{alayrac2022flamingo}, BLIP-2~\cite{li2023blip2}, PaLI~\cite{chen2022pali}, Qwen-VL~\cite{bai2023qwenvl}, and LLaVA~\cite{liu2023llava}.
+Representative systems include Flamingo~\cite{alayrac2022flamingo}, BLIP-2~\cite{li2023blip2}, PaLI~\cite{chen2022pali}, InstructBLIP~\cite{dai2023instructblip}, MiniGPT-4~\cite{zhu2023minigpt4}, IDEFICS~\cite{laurencon2023idefics}, Qwen-VL~\cite{bai2023qwenvl}, and LLaVA~\cite{liu2023llava}.
 Instruction tuning on multimodal data further improves alignment and usability, but these models typically treat vision as mandatory whenever an image is present.
 Our work is orthogonal to backbone design and instruction tuning: we retain the same VLM and focus on deciding when to invoke vision and at what budget.
 
@@ -155,12 +155,14 @@ Such encoder-side optimizations are complementary to our work: even with an effi
 \subsection{Visual Token Reduction in VLMs: Pruning, Merging, and Scheduling}
 
 Another major direction reduces compute by shrinking the number of visual tokens processed by the language model once vision is invoked.
+Earlier vision-token selection and sparsification in ViTs include TokenLearner~\cite{ryoo2021tokenlearner} and DynamicViT~\cite{rao2021dynamicvit}, and token merging for ViTs (ToMe)~\cite{bolya2023tome}; these ideas inspire later VLM pruning and merging approaches.
 Recent methods perform instance-adaptive pruning across layers, either with lightweight learned modules or training-free heuristics.
 ATP-LLaVA~\cite{ye2025atpllava} introduces an adaptive token pruning module to determine instance- and layer-specific pruning ratios, while FitPrune~\cite{ye2025fitprune} derives a pruning recipe from attention statistics in a training-free manner to meet a user-specified budget.
 
 Beyond pure pruning, token merging and deduplication have emerged as strong training-free techniques.
 AIM~\cite{zhong2025aim} combines iterative token merging based on embedding similarity (before the LLM) with progressive token pruning inside LLM layers to realize a wide range of accuracy--efficiency trade-offs.
 Relatedly, VisPruner~\cite{zhang2025vispruner} argues that text-visual attention is not a reliable pruning signal and proposes a plug-and-play approach leveraging visual cues and similarity-based duplicate removal for more effective pruning.
+Training-free token manipulation strategies (e.g., DToMA) have also been explored to trade accuracy for efficiency in long-form vision inputs~\cite{yuan2025dtoma}.
 
 Multi-granularity representations provide another axis of efficiency.
 Matryoshka Multimodal Models (M3)~\cite{chen2024m3} propose nested multimodal representations that can be truncated at different granularities to trade representational fidelity for computation.
@@ -174,6 +176,7 @@ Our approach is therefore orthogonal to token reduction and can be combined with
 \subsection{Adaptive Computation and Conditional Inference}
 
 Adaptive computation reduces inference cost by allocating computation based on input difficulty.
+Foundational ideas include adaptive computation time (ACT)~\cite{graves2016act} and dynamic routing such as SkipNet~\cite{wang2018skipnet}.
 Early-exit and conditional routing enable models to terminate inference early or skip computation for easy examples.
 Classic early-exit architectures (e.g., BranchyNet~\cite{teerapittayanon2017branchynet}) and language-model early exit (e.g., DeeBERT~\cite{xin2020deebert}) demonstrate that a substantial portion of compute can be avoided without degrading performance on easy instances.
 
@@ -188,7 +191,8 @@ This form of conditional inference is particularly well-suited to multimodal set
 \subsection{Uncertainty-Aware Selective Prediction}
 
 Uncertainty estimation has long been used to guide selective prediction, abstention, and deferred decision-making.
-Selective classification~\cite{geifman2017selective} formalizes the accuracy--coverage trade-off, and uncertainty measures such as predictive entropy or probability margins are widely used to decide when to abstain or request additional information.
+Selective classification~\cite{geifman2017selective} formalizes the accuracy--coverage trade-off, with models such as SelectiveNet~\cite{geifman2019selectivenet} integrating a reject option.
+Uncertainty measures such as predictive entropy or probability margins are widely used to decide when to abstain or request additional information.
 In multimodal contexts, uncertainty is often used heuristically to decide when auxiliary modalities should be consulted.
 
 Our approach builds on this intuition but differs in two key aspects.
