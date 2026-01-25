@@ -435,18 +435,26 @@ Visual cost is the measured number of visual tokens when available; otherwise we
 We report action ratios (NO/COARSE/FULL) and cost for each method.
 
 \paragraph{Training.}
-We optimize \cref{eq:total_loss} and sweep $\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve.
-We report 2--3 random seeds for selected $\lambda_{\text{cost}}$ values.
+We optimize \cref{eq:total_loss} with a two-stage schedule: a full-only warmup (2k steps) followed by
+policy training (up to 40k steps). Stage~2 uses gain supervision with a ranking hinge loss
+($\text{margin}=0.2$), entropy regularization, and a small exploration probability ($\epsilon=0.05$).
+We linearly warm up $\lambda_{\text{cost}}$ over the first 6k steps of Stage~2 and sweep
+$\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve. We report 2--3 random seeds for
+selected $\lambda_{\text{cost}}$ values.
 
 \subsection{Baselines}
 \label{sec:baselines}
 We compare against:
 \begin{itemize}
   \item \textbf{Always-Full / Always-Coarse / No-Vision:} fixed policies establishing upper/lower bounds.
-  \item \textbf{Uncertainty Threshold:} a rule that invokes vision when entropy (or margin) exceeds a tuned threshold.
-  \item \textbf{Random Policy (ratio-matched):} samples actions to match \method's action ratios, testing whether gains come from per-instance decisions.
+  \item \textbf{Uncertainty Threshold:} invoke vision when entropy or margin exceeds a tuned threshold.
+  \item \textbf{Random Policy (ratio-matched):} samples actions to match \method's action ratios (global) or
+  entropy-bucketed ratios (low/mid/high), testing whether gains come from per-instance decisions.
   \item \textbf{Resolution Scaling:} always uses vision but varies input resolution to sweep cost.
-  \item \textbf{Token Pruning / Token Merge / Multi-Granularity Proxies:} always uses vision but reduces visual token counts to match cost.
+  \item \textbf{Token Pruning / Token Merge / Multi-Granularity Proxies:} always uses vision but reduces
+  visual token counts to match cost.
+  \item \textbf{Fallback \& Oracle (analysis):} a safety fallback that upgrades NO$\rightarrow$FULL under high
+  uncertainty, and an oracle policy that picks the cheapest correct action on a small subset.
 \end{itemize}
 All baselines share identical decoding parameters, budget definitions, and cost accounting.
 
@@ -548,6 +556,8 @@ We conduct ablations to isolate which components drive Pareto improvements:
 Selective vision can fail if the policy skips vision on vision-critical instances.
 We report (i) a fallback mechanism that upgrades \no\ under high uncertainty, and its accuracy--cost impact;
 (ii) error slicing by chosen action (NO/COARSE/FULL); and (iii) calibration metrics (ECE) for action confidence.
+We additionally report an Oracle-Action upper bound on a small subset to quantify the maximum achievable
+cost--accuracy trade-off under perfect action selection.
 
 \subsection{System Profiling}
 \label{sec:profiling}
@@ -652,13 +662,16 @@ visual tokens produced by the vision encoder; if unavailable, we use a patch
 count proxy computed from preprocessing.
 
 \paragraph{Training schedule and optimization.}
-Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$.
-Stage~2 trains the policy head with $\lambda_{\text{cost}} \in
-\{0, 0.01, 0.02, 0.05, 0.1\}$ for Pareto sweeps.
+Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$ for 2k steps.
+Stage~2 trains the policy head for up to 40k steps. We use a ranking hinge gain loss
+($\text{margin}=0.2$) with weight $\lambda_{\text{gain}}=6.0$, entropy regularization
+($\lambda_{\text{ent}}=0.005$), and a small exploration probability $\epsilon=0.05$.
+We linearly warm up $\lambda_{\text{cost}}$ over the first 6k steps of Stage~2 and sweep
+$\lambda_{\text{cost}} \in \{0, 0.01, 0.02, 0.05, 0.1\}$ for Pareto curves.
 Optimizer: AdamW, learning rate $5\times 10^{-5}$, weight decay 0,
 max grad norm 1.0, warmup steps 0. Per-device batch size 1 with gradient
 accumulation 4. Mixed precision fp16 and gradient checkpointing are enabled
-on V100 GPUs. Checkpoints are saved every 5{,}000 steps.
+on V100 GPUs. Checkpoints are saved every 2{,}000 steps.
 
 \paragraph{Evaluation protocol.}
 Main benchmark: MMBench-dev (test labels are withheld).
@@ -679,8 +692,8 @@ CUDA 11.8 and NCCL are used for multi-GPU training.
 \label{app:extra}
 \paragraph{Extended Pareto curves.}
 We include per-dataset Pareto curves and action-ratio plots for all baselines
-(Always-Full/Coarse/No-Vision, Threshold, Random Matched, Resolution Scaling,
-Token Pruning, Token Merge, Multi-Granularity).
+(Always-Full/Coarse/No-Vision, Threshold (entropy/margin), Random Matched (global/bucketed),
+Resolution Scaling, Token Pruning, Token Merge, Multi-Granularity, Fallback, Oracle).
 
 \paragraph{Additional ablations.}
 We report temperature and prompt-template sensitivity, alternative uncertainty
