@@ -184,7 +184,8 @@ class Config:
         if self.training.stage1_epochs > self.training.epochs:
             raise ValueError("stage1_epochs must be <= total epochs")
         if self.training.stage1_max_steps is not None and self.training.stage1_max_steps <= 0:
-            raise ValueError("stage1_max_steps must be > 0 when set")
+            if self.training.stage1_epochs > 0:
+                raise ValueError("stage1_max_steps must be > 0 when set")
         if self.training.stage2_max_steps is not None and self.training.stage2_max_steps <= 0:
             raise ValueError("stage2_max_steps must be > 0 when set")
         if self.training.stage1_baseline_name:
