@@ -15,7 +15,7 @@ training:
   stage1_baseline_name: "always_full"
   stage1_lambda_cost: 0.0
   stage1_max_steps: 2000
-  stage2_max_steps: 12000
+  stage2_max_steps: 40001
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
