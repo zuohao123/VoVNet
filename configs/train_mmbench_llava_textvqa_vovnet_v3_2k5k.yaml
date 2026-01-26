@@ -39,22 +39,22 @@ policy:
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 1000
   policy_delta_no_start: 0.0
-  policy_delta_no_end: 0.02
+  policy_delta_no_end: 0.01
   policy_delta_coarse_start: 0.0
-  policy_delta_coarse_end: 0.08
-  policy_min_full_ratio: 0.2
-  policy_min_full_warmup_steps: 1000
+  policy_delta_coarse_end: 0.05
+  policy_min_full_ratio: 0.0
+  policy_min_full_warmup_steps: 0
   policy_open_enable: true
-  policy_open_quantile: 0.2
-  policy_open_margin: 0.02
-  policy_open_use_best_vis: true
-  lambda_cost: 0.002
+  policy_open_quantile: 0.0
+  policy_open_margin: 0.0
+  policy_open_use_best_vis: false
+  lambda_cost: 0.0005
   cost_scale: 0.05
-  cost_warmup_steps: 1000
+  cost_warmup_steps: 3000
   gumbel_tau: 1.5
   use_straight_through: true
   entropy_weight: 0.01
-  explore_prob: 0.1
+  explore_prob: 0.05
 
 vision_budget:
   coarse_long_side: 224
