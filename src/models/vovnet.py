@@ -451,6 +451,10 @@ class VoVNet(nn.Module):
         }
 
     def _select_actions(self, action_logits: Tensor) -> Tuple[Tensor, Tensor]:
+        if not torch.isfinite(action_logits).all():
+            action_logits = torch.nan_to_num(
+                action_logits, nan=0.0, posinf=1e4, neginf=-1e4
+            )
         if self.training:
             if self.use_straight_through:
                 probs = F.gumbel_softmax(
@@ -471,6 +475,12 @@ class VoVNet(nn.Module):
                 actions = torch.multinomial(probs, num_samples=1).squeeze(-1)
             else:
                 actions = probs.argmax(dim=-1)
+        if not torch.isfinite(probs).all():
+            probs = torch.nan_to_num(
+                probs, nan=1.0 / probs.size(-1), posinf=0.0, neginf=0.0
+            )
+        probs = probs.clamp_min(1e-8)
+        probs = probs / probs.sum(dim=-1, keepdim=True)
         return probs, actions
 
     def _compute_uncertainty(self, outputs: VLMOutputs) -> Tensor:
