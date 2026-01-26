@@ -706,6 +706,13 @@ def main() -> None:
         "entropy_loss": 0.0,
         "policy_loss": 0.0,
     }
+    summary_every = int(getattr(cfg.training, "summary_every", 0) or 0)
+    period_samples = torch.zeros(1, device=device)
+    period_action_counts = torch.zeros(len(Action), device=device)
+    period_cost_sum = torch.zeros(1, device=device)
+    period_task_sum = torch.zeros(1, device=device)
+    period_policy_sum = torch.zeros(1, device=device)
+    period_entropy_sum = torch.zeros(1, device=device)
 
     epoch_idx = 0
     for stage in stages:
@@ -889,6 +896,23 @@ def main() -> None:
                     losses.get("policy_loss", 0.0).item()
                 ) * batch_size
 
+                if summary_every > 0:
+                    period_samples += batch_size
+                    period_action_counts += torch.bincount(
+                        outputs["actions"].detach(), minlength=len(Action)
+                    ).float()
+                    expected_cost = outputs.get("expected_cost")
+                    if expected_cost is not None:
+                        period_cost_sum += expected_cost.detach().sum()
+                    period_task_sum += losses["task_loss"].detach() * batch_size
+                    period_policy_sum += losses.get(
+                        "policy_loss", torch.tensor(0.0, device=device)
+                    ).detach() * batch_size
+                    action_probs = outputs.get("action_probs")
+                    if action_probs is not None:
+                        ent = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1)
+                        period_entropy_sum += ent.detach().sum()
+
                 if global_step % cfg.training.log_every == 0 and rank == 0:
                     avg_losses = {
                         key: value / max(1, window_samples)
@@ -961,6 +985,38 @@ def main() -> None:
                         ckpt_path,
                     )
                     logger.info("Saved checkpoint to %s", ckpt_path)
+
+                if summary_every > 0 and global_step > 0 and global_step % summary_every == 0:
+                    if distributed:
+                        dist.all_reduce(period_samples, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_action_counts, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_cost_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_task_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_policy_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_entropy_sum, op=dist.ReduceOp.SUM)
+                    if rank == 0:
+                        samples = max(1.0, float(period_samples.item()))
+                        action_ratio = (period_action_counts / samples).tolist()
+                        avg_cost = float(period_cost_sum.item()) / samples
+                        avg_task = float(period_task_sum.item()) / samples
+                        avg_policy = float(period_policy_sum.item()) / samples
+                        avg_entropy = float(period_entropy_sum.item()) / samples
+                        logger.info(
+                            "SUMMARY@%d samples=%d action_ratio=%s avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f",
+                            global_step,
+                            int(samples),
+                            action_ratio,
+                            avg_cost,
+                            avg_task,
+                            avg_policy,
+                            avg_entropy,
+                        )
+                    period_samples.zero_()
+                    period_action_counts.zero_()
+                    period_cost_sum.zero_()
+                    period_task_sum.zero_()
+                    period_policy_sum.zero_()
+                    period_entropy_sum.zero_()
 
                 global_step += 1
                 stage_steps += 1

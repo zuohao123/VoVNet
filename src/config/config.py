@@ -122,6 +122,7 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"
     log_every: int = 10
+    summary_every: int = 2000
     save_every: int = 500
     deepspeed_stage: int = 2
     use_fsdp: bool = False
@@ -188,6 +189,8 @@ class Config:
                 raise ValueError("stage1_max_steps must be > 0 when set")
         if self.training.stage2_max_steps is not None and self.training.stage2_max_steps <= 0:
             raise ValueError("stage2_max_steps must be > 0 when set")
+        if self.training.summary_every < 0:
+            raise ValueError("summary_every must be >= 0")
         if self.training.stage1_baseline_name:
             stage1 = self.training.stage1_baseline_name.strip().lower()
             if stage1 not in {

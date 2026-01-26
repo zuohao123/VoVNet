@@ -143,10 +143,15 @@ class VLMDataCollator:
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         questions = [item.get("question", "") for item in batch]
         cleaned_choices = [_clean_choices(item.get("choices")) for item in batch]
-        answer_texts = [
-            _coerce_answer_text(item.get("answer", ""), choices)
-            for item, choices in zip(batch, cleaned_choices)
-        ]
+        answer_texts = []
+        for item, choices in zip(batch, cleaned_choices):
+            # Prefer `answer`, fall back to `answer_info`/`label` if missing.
+            answer = item.get("answer")
+            if answer in (None, "", []):
+                answer = item.get("answer_info")
+            if answer in (None, "", []):
+                answer = item.get("label")
+            answer_texts.append(_coerce_answer_text(answer, choices))
         answer_refs = []
         for item, answer_text, choices in zip(batch, answer_texts, cleaned_choices):
             ref = item.get("answer_info")
