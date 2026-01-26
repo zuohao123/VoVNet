@@ -713,6 +713,11 @@ def main() -> None:
     period_task_sum = torch.zeros(1, device=device)
     period_policy_sum = torch.zeros(1, device=device)
     period_entropy_sum = torch.zeros(1, device=device)
+    period_action_prob_sum = torch.zeros(len(Action), device=device)
+    period_target_counts = torch.zeros(len(Action), device=device)
+    period_loss_triplet_sum = torch.zeros(len(Action), device=device)
+    period_label_tokens = torch.zeros(1, device=device)
+    period_label_total = torch.zeros(1, device=device)
 
     epoch_idx = 0
     for stage in stages:
@@ -805,20 +810,66 @@ def main() -> None:
                                         (stage_steps + 1)
                                         / float(cfg.policy.policy_delta_warmup_steps),
                                     )
-                                    policy_delta = cfg.policy.policy_delta_start + progress * (
-                                        cfg.policy.policy_delta_end
-                                        - cfg.policy.policy_delta_start
-                                    )
                                 else:
-                                    policy_delta = cfg.policy.policy_delta_end
+                                    progress = 1.0
+                                delta_no_start = (
+                                    cfg.policy.policy_delta_no_start
+                                    if cfg.policy.policy_delta_no_start is not None
+                                    else cfg.policy.policy_delta_start
+                                )
+                                delta_no_end = (
+                                    cfg.policy.policy_delta_no_end
+                                    if cfg.policy.policy_delta_no_end is not None
+                                    else cfg.policy.policy_delta_end
+                                )
+                                delta_coarse_start = (
+                                    cfg.policy.policy_delta_coarse_start
+                                    if cfg.policy.policy_delta_coarse_start is not None
+                                    else cfg.policy.policy_delta_start
+                                )
+                                delta_coarse_end = (
+                                    cfg.policy.policy_delta_coarse_end
+                                    if cfg.policy.policy_delta_coarse_end is not None
+                                    else cfg.policy.policy_delta_end
+                                )
+                                delta_no = delta_no_start + progress * (delta_no_end - delta_no_start)
+                                delta_coarse = delta_coarse_start + progress * (
+                                    delta_coarse_end - delta_coarse_start
+                                )
                                 if cfg.policy.policy_target_mode == "loss_margin":
                                     policy_targets = compute_policy_targets(
-                                        loss_triplet, policy_delta
+                                        loss_triplet, (delta_coarse, delta_no)
                                     )
                                 else:
                                     raise ValueError(
                                         f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
                                     )
+                                min_full_ratio = float(cfg.policy.policy_min_full_ratio or 0.0)
+                                if min_full_ratio > 0:
+                                    if cfg.policy.policy_min_full_warmup_steps > 0:
+                                        warmup = float(cfg.policy.policy_min_full_warmup_steps)
+                                        min_full_ratio = min_full_ratio * min(
+                                            1.0, (stage_steps + 1) / warmup
+                                        )
+                                    if min_full_ratio > 0:
+                                        full_mask = policy_targets == Action.FULL_VISION
+                                        full_count = int(full_mask.sum().item())
+                                        needed = int(
+                                            max(
+                                                0,
+                                                round(min_full_ratio * float(batch_size)) - full_count,
+                                            )
+                                        )
+                                        if needed > 0:
+                                            candidates = (policy_targets != Action.FULL_VISION).nonzero(
+                                                as_tuple=False
+                                            )
+                                            if candidates.numel() > 0:
+                                                perm = torch.randperm(
+                                                    candidates.shape[0], device=candidates.device
+                                                )
+                                                pick = candidates[perm[:needed]].squeeze(-1)
+                                                policy_targets[pick] = Action.FULL_VISION
                         losses = compute_total_loss(
                             outputs["logits"],
                             outputs.get("labels"),
@@ -912,6 +963,18 @@ def main() -> None:
                     if action_probs is not None:
                         ent = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1)
                         period_entropy_sum += ent.detach().sum()
+                        period_action_prob_sum += action_probs.detach().sum(dim=0)
+                    if policy_targets is not None:
+                        period_target_counts += torch.bincount(
+                            policy_targets.detach(), minlength=len(Action)
+                        ).float()
+                    loss_triplet = outputs.get("loss_triplet")
+                    if loss_triplet is not None:
+                        period_loss_triplet_sum += loss_triplet.detach().sum(dim=0)
+                    labels = batch.get("labels")
+                    if labels is not None:
+                        period_label_tokens += labels.ne(-100).sum()
+                        period_label_total += labels.numel()
 
                 if global_step % cfg.training.log_every == 0 and rank == 0:
                     avg_losses = {
@@ -987,6 +1050,25 @@ def main() -> None:
                     logger.info("Saved checkpoint to %s", ckpt_path)
 
                 if summary_every > 0 and global_step > 0 and global_step % summary_every == 0:
+                    sample_pred = None
+                    sample_label = None
+                    if rank == 0:
+                        labels = batch.get("labels")
+                        logits = outputs.get("logits")
+                        if labels is not None and logits is not None:
+                            try:
+                                pred_ids = logits.argmax(dim=-1)
+                                mask = labels.ne(-100)
+                                if mask.any():
+                                    tok = (model.module if isinstance(model, DDP) else model).base_vlm.tokenizer
+                                    if tok is not None:
+                                        label_ids = labels[0][mask[0]].detach().cpu().tolist()
+                                        pred_ids_0 = pred_ids[0][mask[0]].detach().cpu().tolist()
+                                        sample_label = tok.decode(label_ids[:32], skip_special_tokens=True)
+                                        sample_pred = tok.decode(pred_ids_0[:32], skip_special_tokens=True)
+                            except Exception:
+                                sample_pred = None
+                                sample_label = None
                     if distributed:
                         dist.all_reduce(period_samples, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_action_counts, op=dist.ReduceOp.SUM)
@@ -994,6 +1076,11 @@ def main() -> None:
                         dist.all_reduce(period_task_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_policy_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_entropy_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_action_prob_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_target_counts, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_loss_triplet_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_label_tokens, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_label_total, op=dist.ReduceOp.SUM)
                     if rank == 0:
                         samples = max(1.0, float(period_samples.item()))
                         action_ratio = (period_action_counts / samples).tolist()
@@ -1001,15 +1088,33 @@ def main() -> None:
                         avg_task = float(period_task_sum.item()) / samples
                         avg_policy = float(period_policy_sum.item()) / samples
                         avg_entropy = float(period_entropy_sum.item()) / samples
+                        mean_probs = (period_action_prob_sum / samples).tolist()
+                        target_ratio = None
+                        if period_target_counts.sum().item() > 0:
+                            target_ratio = (period_target_counts / samples).tolist()
+                        mean_loss_triplet = None
+                        if period_loss_triplet_sum.sum().item() > 0:
+                            mean_loss_triplet = (period_loss_triplet_sum / samples).tolist()
+                        label_valid_ratio = 0.0
+                        if period_label_total.item() > 0:
+                            label_valid_ratio = float(period_label_tokens.item()) / float(
+                                period_label_total.item()
+                            )
                         logger.info(
-                            "SUMMARY@%d samples=%d action_ratio=%s avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f",
+                            "SUMMARY@%d samples=%d action_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
                             global_step,
                             int(samples),
                             action_ratio,
+                            target_ratio,
+                            mean_probs,
+                            mean_loss_triplet,
+                            label_valid_ratio,
                             avg_cost,
                             avg_task,
                             avg_policy,
                             avg_entropy,
+                            sample_pred,
+                            sample_label,
                         )
                     period_samples.zero_()
                     period_action_counts.zero_()
@@ -1017,6 +1122,11 @@ def main() -> None:
                     period_task_sum.zero_()
                     period_policy_sum.zero_()
                     period_entropy_sum.zero_()
+                    period_action_prob_sum.zero_()
+                    period_target_counts.zero_()
+                    period_loss_triplet_sum.zero_()
+                    period_label_tokens.zero_()
+                    period_label_total.zero_()
 
                 global_step += 1
                 stage_steps += 1

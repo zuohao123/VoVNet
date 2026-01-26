@@ -51,6 +51,12 @@ class Trainer:
         policy_delta_start: float = 0.0,
         policy_delta_end: float = 0.0,
         policy_delta_warmup_steps: int = 0,
+        policy_delta_no_start: float | None = None,
+        policy_delta_no_end: float | None = None,
+        policy_delta_coarse_start: float | None = None,
+        policy_delta_coarse_end: float | None = None,
+        policy_min_full_ratio: float = 0.0,
+        policy_min_full_warmup_steps: int = 0,
         baseline_name: Optional[str] = None,
         finetune_pruning: bool = False,
         cost_warmup_steps: int = 0,
@@ -83,6 +89,12 @@ class Trainer:
         self.policy_delta_start = float(policy_delta_start)
         self.policy_delta_end = float(policy_delta_end)
         self.policy_delta_warmup_steps = max(0, int(policy_delta_warmup_steps))
+        self.policy_delta_no_start = policy_delta_no_start
+        self.policy_delta_no_end = policy_delta_no_end
+        self.policy_delta_coarse_start = policy_delta_coarse_start
+        self.policy_delta_coarse_end = policy_delta_coarse_end
+        self.policy_min_full_ratio = float(policy_min_full_ratio or 0.0)
+        self.policy_min_full_warmup_steps = max(0, int(policy_min_full_warmup_steps))
         self.baseline_name = normalize_baseline_name(baseline_name)
         self.finetune_pruning = finetune_pruning
 
@@ -186,19 +198,67 @@ class Trainer:
                                     1.0,
                                     (global_step + 1) / self.policy_delta_warmup_steps,
                                 )
-                                policy_delta = self.policy_delta_start + progress * (
-                                    self.policy_delta_end - self.policy_delta_start
-                                )
                             else:
-                                policy_delta = self.policy_delta_end
+                                progress = 1.0
+                            delta_no_start = (
+                                self.policy_delta_no_start
+                                if self.policy_delta_no_start is not None
+                                else self.policy_delta_start
+                            )
+                            delta_no_end = (
+                                self.policy_delta_no_end
+                                if self.policy_delta_no_end is not None
+                                else self.policy_delta_end
+                            )
+                            delta_coarse_start = (
+                                self.policy_delta_coarse_start
+                                if self.policy_delta_coarse_start is not None
+                                else self.policy_delta_start
+                            )
+                            delta_coarse_end = (
+                                self.policy_delta_coarse_end
+                                if self.policy_delta_coarse_end is not None
+                                else self.policy_delta_end
+                            )
+                            delta_no = delta_no_start + progress * (delta_no_end - delta_no_start)
+                            delta_coarse = delta_coarse_start + progress * (
+                                delta_coarse_end - delta_coarse_start
+                            )
                             if self.policy_target_mode == "loss_margin":
                                 policy_targets = compute_policy_targets(
-                                    loss_triplet, policy_delta
+                                    loss_triplet, (delta_coarse, delta_no)
                                 )
                             else:
                                 raise ValueError(
                                     f"Unknown policy_target_mode: {self.policy_target_mode}"
                                 )
+                            min_full_ratio = float(self.policy_min_full_ratio or 0.0)
+                            if min_full_ratio > 0:
+                                if self.policy_min_full_warmup_steps > 0:
+                                    warmup = float(self.policy_min_full_warmup_steps)
+                                    min_full_ratio = min_full_ratio * min(
+                                        1.0, (global_step + 1) / warmup
+                                    )
+                                if min_full_ratio > 0:
+                                    full_mask = policy_targets == Action.FULL_VISION
+                                    full_count = int(full_mask.sum().item())
+                                    needed = int(
+                                        max(
+                                            0,
+                                            round(min_full_ratio * float(batch_size))
+                                            - full_count,
+                                        )
+                                    )
+                                    if needed > 0:
+                                        candidates = (policy_targets != Action.FULL_VISION).nonzero(
+                                            as_tuple=False
+                                        )
+                                        if candidates.numel() > 0:
+                                            perm = torch.randperm(
+                                                candidates.shape[0], device=candidates.device
+                                            )
+                                            pick = candidates[perm[:needed]].squeeze(-1)
+                                            policy_targets[pick] = Action.FULL_VISION
                     losses = compute_total_loss(
                         outputs["logits"],
                         outputs.get("labels"),

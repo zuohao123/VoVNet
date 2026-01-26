@@ -73,6 +73,12 @@ class PolicyConfig:
     policy_delta_start: float = 0.0
     policy_delta_end: float = 0.0
     policy_delta_warmup_steps: int = 0
+    policy_delta_no_start: float | None = None
+    policy_delta_no_end: float | None = None
+    policy_delta_coarse_start: float | None = None
+    policy_delta_coarse_end: float | None = None
+    policy_min_full_ratio: float = 0.0
+    policy_min_full_warmup_steps: int = 0
     explore_prob: float = 0.0
 
 
@@ -221,6 +227,24 @@ class Config:
             raise ValueError("policy.policy_ce_weight must be >= 0")
         if self.policy.policy_delta_warmup_steps < 0:
             raise ValueError("policy.policy_delta_warmup_steps must be >= 0")
+        if self.policy.policy_delta_no_start is not None and self.policy.policy_delta_no_start < 0:
+            raise ValueError("policy.policy_delta_no_start must be >= 0")
+        if self.policy.policy_delta_no_end is not None and self.policy.policy_delta_no_end < 0:
+            raise ValueError("policy.policy_delta_no_end must be >= 0")
+        if (
+            self.policy.policy_delta_coarse_start is not None
+            and self.policy.policy_delta_coarse_start < 0
+        ):
+            raise ValueError("policy.policy_delta_coarse_start must be >= 0")
+        if (
+            self.policy.policy_delta_coarse_end is not None
+            and self.policy.policy_delta_coarse_end < 0
+        ):
+            raise ValueError("policy.policy_delta_coarse_end must be >= 0")
+        if not (0.0 <= self.policy.policy_min_full_ratio <= 1.0):
+            raise ValueError("policy.policy_min_full_ratio must be in [0, 1]")
+        if self.policy.policy_min_full_warmup_steps < 0:
+            raise ValueError("policy.policy_min_full_warmup_steps must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name

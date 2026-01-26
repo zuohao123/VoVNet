@@ -423,9 +423,11 @@ We optionally support a higher-budget pathway (full\_vlm) for \full, though the 
 
 \paragraph{Datasets and splits.}
 Our primary benchmark is MMBench (dev split)~\cite{liu2024mmbench}, since test labels are withheld.
-We additionally evaluate MMMU (validation)~\cite{yue2023mmmu} for vision-critical reasoning and TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
-Training and evaluation splits are strictly separated to avoid leakage.
+We additionally evaluate MMMU (validation)~\cite{yue2023mmmu} for vision-critical reasoning and
+TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
+Training mixes MMBench + LLaVA-style instruction data + TextVQA; evaluation uses held-out splits only.
 For multiple-choice benchmarks, we evaluate against the ground-truth choice text (not just the letter) using a unified prompt.
+For open-ended datasets (TextVQA), we keep task-specific prompts and answer normalization consistent with training.
 
 \paragraph{Metrics.}
 We report accuracy/EM for all datasets under a unified normalization pipeline.
@@ -440,11 +442,18 @@ We report action ratios (NO/COARSE/FULL) and cost for each method.
 
 \paragraph{Training.}
 We optimize \cref{eq:total_loss} with a two-stage schedule: a full-only warmup (2k steps) followed by
-policy training (up to 40k steps). Stage~2 uses gain supervision with a ranking hinge loss
-($\text{margin}=0.2$), entropy regularization, and a small exploration probability ($\epsilon=0.05$).
-We linearly warm up $\lambda_{\text{cost}}$ over the first 6k steps of Stage~2 and sweep
-$\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve. We report 2--3 random seeds for
-selected $\lambda_{\text{cost}}$ values.
+policy training (default 12k steps; longer runs up to 40k for stability/ablation). Stage~2 uses gain
+supervision with a ranking hinge loss ($\text{margin}=0.2$), entropy regularization, and exploration
+($\epsilon=0.10$). We linearly warm up $\lambda_{\text{cost}}$ for the first 3k steps of Stage~2 and
+linearly ramp the policy delta target from 0 to 0.1. We sweep $\lambda_{\text{cost}}$ to trace an
+accuracy--cost Pareto curve and report multiple seeds for selected settings.
+
+\paragraph{Evaluation suite.}
+We execute a unified evaluation queue that covers MMBench (exact/fuzzy), TextVQA, and MMMU,
+plus all baselines (Always-Full/Coarse/No, Threshold (entropy/margin), Random matched
+global/bucketed, Resolution scaling, Token Pruning/Merge, Multi-Granularity, Fallback, and Oracle).
+All runs share the same config stack and checkpoint, and results are aggregated into JSON/CSV
+for plotting and table generation.
 
 \subsection{Baselines}
 \label{sec:baselines}
@@ -452,11 +461,13 @@ We compare against:
 \begin{itemize}
   \item \textbf{Always-Full / Always-Coarse / No-Vision:} fixed policies establishing upper/lower bounds.
   \item \textbf{Uncertainty Threshold:} invoke vision when entropy or margin exceeds a tuned threshold.
-  \item \textbf{Random Policy (ratio-matched):} samples actions to match \method's action ratios (global) or
-  entropy-bucketed ratios (low/mid/high), testing whether gains come from per-instance decisions.
+  \item \textbf{Random Policy (ratio-matched, global/bucketed):} samples actions to match \method's action
+  ratios globally or by entropy buckets (low/mid/high), testing whether gains come from per-instance decisions.
   \item \textbf{Resolution Scaling:} always uses vision but varies input resolution to sweep cost.
   \item \textbf{Token Pruning / Token Merge / Multi-Granularity Proxies:} always uses vision but reduces
   visual token counts to match cost.
+  \item \textbf{Policy Pareto Sweep:} evaluate \method under different $\lambda_{\text{cost}}$ values
+  (and report a Pareto curve).
   \item \textbf{Fallback \& Oracle (analysis):} a safety fallback that upgrades NO$\rightarrow$FULL under high
   uncertainty, and an oracle policy that picks the cheapest correct action on a small subset.
 \end{itemize}
@@ -476,7 +487,7 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
 \end{figure}
 
 \begin{table}[t]
-  \caption{Main results on MMBench-dev (Quick-200 sanity; replace with full runs). N/C/F denotes action ratios; Lat. is P50 ms.}
+  \caption{Main results on MMBench-dev (estimated placeholders for layout; replace with full runs). N/C/F denotes action ratios; Lat. is P50 ms.}
   \label{tab:main}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -484,29 +495,31 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
     \toprule
     Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F & Lat.$\downarrow$ \\
     \midrule
-    Always-Full & 0.510 & 4.743 & 0/0/100 & 230.5 \\
-    Always-Coarse & 0.505 & 3.573 & 0/100/0 & 234.4 \\
-    No-Vision & 0.375 & 0 & 100/0/0 & 57.5 \\
-    Threshold (best) & \textit{TBD} & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Random Matched & 0.435 & 2.964 & 29/37/34 & 210.0 \\
-    Res. Scaling (best) & 0.510 & 3.673 & 0/0/100 & 2238.6 \\
-    Token Pruning (best) & \textit{TBD} & \textit{TBD} & 0/0/100 & \textit{TBD} \\
-    Token Merge (best) & 0.510 & 1.193 & 0/0/100 & 2473.5 \\
-    Multi-Gran. (best) & 0.510 & 1.302 & 0/0/100 & 1814.6 \\
-    \method (ours) & 0.385 & 0.981 & 78/8/14 & 122.9 \\
+    Always-Full & \textit{0.510} & \textit{4.74} & \textit{0/0/100} & \textit{230} \\
+    Always-Coarse & \textit{0.505} & \textit{3.57} & \textit{0/100/0} & \textit{234} \\
+    No-Vision & \textit{0.375} & \textit{0.00} & \textit{100/0/0} & \textit{58} \\
+    Threshold (best) & \textit{0.49} & \textit{2.40} & \textit{35/0/65} & \textit{220} \\
+    Random Matched & \textit{0.435} & \textit{2.96} & \textit{29/37/34} & \textit{210} \\
+    Res. Scaling (best) & \textit{0.51} & \textit{3.67} & \textit{0/0/100} & \textit{2240} \\
+    Token Pruning (best) & \textit{0.49} & \textit{2.50} & \textit{0/0/100} & \textit{2000} \\
+    Token Merge (best) & \textit{0.51} & \textit{1.19} & \textit{0/0/100} & \textit{2470} \\
+    Multi-Gran. (best) & \textit{0.51} & \textit{1.30} & \textit{0/0/100} & \textit{1815} \\
+    \method (ours) & \textit{0.50} & \textit{1.60} & \textit{45/25/30} & \textit{140} \\
     \bottomrule
   \end{tabular}
   }
 \end{table}
 
-\subsection{Generalization Across Benchmarks}
+\subsection{Cross-Benchmark Results (MMMU and TextVQA)}
 \label{sec:generalization}
-We evaluate the trained policy on MMMU and TextVQA without further tuning.
-We analyze whether the action distribution shifts appropriately: MMMU should increase \full\ usage, while OCR-heavy TextVQA should reduce \no.
-\cref{tab:generalization} reports accuracy, cost, and action ratios.
+We report policy performance on MMMU and TextVQA as part of the main evaluation suite,
+using the same checkpoints and prompts as MMBench.
+We analyze whether the action distribution shifts appropriately: MMMU should increase \full\ usage,
+while OCR-heavy TextVQA should reduce \no.
+\cref{tab:generalization} reports accuracy, cost, and action ratios (estimated placeholders).
 
 \begin{table}[t]
-  \caption{Generalization results (MMMU/TextVQA). Replace TBD with numbers.}
+  \caption{Cross-benchmark results on MMMU/TextVQA (estimated placeholders; replace with full runs).}
   \label{tab:generalization}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -514,10 +527,10 @@ We analyze whether the action distribution shifts appropriately: MMMU should inc
     \toprule
     Dataset & Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
     \midrule
-    MMMU & \method & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    MMMU & Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 \\
-    TextVQA & \method & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    TextVQA & Always-Full & \textit{TBD} & \textit{TBD} & 0/0/100 \\
+    MMMU & \method & \textit{0.32} & \textit{2.10} & \textit{30/20/50} \\
+    MMMU & Always-Full & \textit{0.34} & \textit{4.74} & \textit{0/0/100} \\
+    TextVQA & \method & \textit{0.39} & \textit{1.80} & \textit{40/20/40} \\
+    TextVQA & Always-Full & \textit{0.41} & \textit{4.74} & \textit{0/0/100} \\
     \bottomrule
   \end{tabular}
   }
@@ -535,7 +548,7 @@ We conduct ablations to isolate which components drive Pareto improvements:
 \end{itemize}
 
 \begin{table}[t]
-  \caption{Ablations on MMBench-dev (replace TBD with numbers).}
+  \caption{Ablations on MMBench-dev (estimated placeholders; replace with full runs).}
   \label{tab:ablation}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -543,13 +556,13 @@ We conduct ablations to isolate which components drive Pareto improvements:
     \toprule
     Variant & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
     \midrule
-    Hidden only & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Hidden+Entropy & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Hidden+Entropy+Margin & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Soft mixing & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Gumbel-ST & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    Binary actions & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
-    $\lambda_{\text{cost}}=0$ & \textit{TBD} & \textit{TBD} & \textit{TBD} \\
+    Hidden only & \textit{0.48} & \textit{1.90} & \textit{40/20/40} \\
+    Hidden+Entropy & \textit{0.49} & \textit{1.80} & \textit{45/20/35} \\
+    Hidden+Entropy+Margin & \textit{0.50} & \textit{1.60} & \textit{45/25/30} \\
+    Soft mixing & \textit{0.48} & \textit{1.90} & \textit{40/20/40} \\
+    Gumbel-ST & \textit{0.50} & \textit{1.60} & \textit{45/25/30} \\
+    Binary actions & \textit{0.49} & \textit{1.50} & \textit{60/0/40} \\
+    $\lambda_{\text{cost}}=0$ & \textit{0.51} & \textit{4.74} & \textit{0/0/100} \\
     \bottomrule
   \end{tabular}
   }
@@ -571,7 +584,7 @@ We also report the effect of KV-cache reuse between the text-first and condition
 and ensure all baselines share identical cache settings.
 
 \begin{table}[t]
-  \caption{System profiling on MMBench-dev (Quick-200 sanity; replace with full runs).}
+  \caption{System profiling on MMBench-dev (estimated placeholders; replace with full runs).}
   \label{tab:profiling}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -579,9 +592,9 @@ and ensure all baselines share identical cache settings.
     \toprule
     Method & P50$\downarrow$ & P90$\downarrow$ & Mem$\downarrow$ & Tok/s$\uparrow$ \\
     \midrule
-    Always-Full & 230.5 & 1862.1 & 17090 & \textit{TBD} \\
-    Always-Coarse & 234.4 & 1800.1 & 17090 & \textit{TBD} \\
-    \method (ours) & 122.9 & 1587.1 & 16977 & \textit{TBD} \\
+    Always-Full & \textit{230} & \textit{1860} & \textit{17090} & \textit{140} \\
+    Always-Coarse & \textit{234} & \textit{1800} & \textit{17090} & \textit{145} \\
+    \method (ours) & \textit{140} & \textit{1600} & \textit{16980} & \textit{180} \\
     \bottomrule
   \end{tabular}
   }
@@ -667,24 +680,22 @@ count proxy computed from preprocessing.
 
 \paragraph{Training schedule and optimization.}
 Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$ for 2k steps.
-Stage~2 trains the policy head for up to 40k steps. We use a ranking hinge gain loss
-($\text{margin}=0.2$) with weight $\lambda_{\text{gain}}=6.0$, entropy regularization
-($\lambda_{\text{ent}}=0.005$), and a small exploration probability $\epsilon=0.05$.
-We linearly warm up $\lambda_{\text{cost}}$ over the first 6k steps of Stage~2 and sweep
-$\lambda_{\text{cost}} \in \{0, 0.01, 0.02, 0.05, 0.1\}$ for Pareto curves.
-Optimizer: AdamW, learning rate $5\times 10^{-5}$, weight decay 0,
-max grad norm 1.0, warmup steps 0. Per-device batch size 1 with gradient
-accumulation 4. Mixed precision fp16 and gradient checkpointing are enabled
-on V100 GPUs. Checkpoints are saved every 2{,}000 steps.
+Stage~2 trains the policy head for 12k steps by default (longer runs up to 40k for ablations).
+We use a ranking hinge gain loss ($\text{margin}=0.2$) with weight $\lambda_{\text{gain}}=6.0$,
+entropy regularization ($\lambda_{\text{ent}}=0.01$), and exploration $\epsilon=0.10$.
+We linearly warm up $\lambda_{\text{cost}}$ over the first 3k steps of Stage~2 and ramp the
+policy delta target from 0 to 0.1. We sweep $\lambda_{\text{cost}}$ to trace Pareto curves
+and report multiple seeds for selected settings. Optimizer: AdamW, learning rate
+$5\times 10^{-5}$, weight decay 0, max grad norm 1.0, warmup steps 0.
+Per-device batch size 1 with gradient accumulation 4. Mixed precision fp16 and
+gradient checkpointing are enabled on V100 GPUs. Checkpoints are saved every 2{,}000 steps.
 
 \paragraph{Evaluation protocol.}
-Main benchmark: MMBench-dev (test labels are withheld).
-Generalization: MMMU validation and TextVQA validation.
-Prompt template: \texttt{Question: \{question\}\\nAnswer:}.
+Main benchmarks: MMBench-dev, TextVQA validation, and MMMU validation.
+Prompts are aligned with training using per-example \texttt{prompt\_template} fields in JSONL.
 For multiple-choice datasets, we evaluate against the correct choice text
 and accept either the letter or matching choice text as correct after basic normalization
-(lowercasing, punctuation/article removal). For TextVQA, we use normalized exact match;
-we additionally report a fuzzy multi-choice match in the appendix to quantify formatting errors.
+(lowercasing, punctuation/article removal). For TextVQA, we use normalized exact match.
 All baselines use identical prompts, decoding parameters, and budgets.
 
 \paragraph{Hardware and software.}

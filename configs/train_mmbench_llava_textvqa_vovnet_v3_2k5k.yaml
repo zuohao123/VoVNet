@@ -38,6 +38,12 @@ policy:
   policy_delta_start: 0.0
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 3000
+  policy_delta_no_start: 0.0
+  policy_delta_no_end: 0.02
+  policy_delta_coarse_start: 0.0
+  policy_delta_coarse_end: 0.08
+  policy_min_full_ratio: 0.2
+  policy_min_full_warmup_steps: 3000
   lambda_cost: 0.002
   cost_scale: 0.05
   cost_warmup_steps: 3000
