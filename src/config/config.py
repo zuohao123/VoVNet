@@ -79,6 +79,9 @@ class PolicyConfig:
     policy_delta_coarse_end: float | None = None
     policy_min_full_ratio: float = 0.0
     policy_min_full_warmup_steps: int = 0
+    policy_no_bias_start: float = 0.0
+    policy_no_bias_end: float = 0.0
+    policy_no_bias_warmup_steps: int = 0
     policy_open_enable: bool = False
     policy_open_quantile: float = 0.2
     policy_open_margin: float = 0.02
@@ -249,6 +252,12 @@ class Config:
             raise ValueError("policy.policy_min_full_ratio must be in [0, 1]")
         if self.policy.policy_min_full_warmup_steps < 0:
             raise ValueError("policy.policy_min_full_warmup_steps must be >= 0")
+        if self.policy.policy_no_bias_start < 0:
+            raise ValueError("policy.policy_no_bias_start must be >= 0")
+        if self.policy.policy_no_bias_end < 0:
+            raise ValueError("policy.policy_no_bias_end must be >= 0")
+        if self.policy.policy_no_bias_warmup_steps < 0:
+            raise ValueError("policy.policy_no_bias_warmup_steps must be >= 0")
         if not (0.0 <= self.policy.policy_open_quantile <= 1.0):
             raise ValueError("policy.policy_open_quantile must be in [0, 1]")
         if self.policy.policy_open_margin < 0:

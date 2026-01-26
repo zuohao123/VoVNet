@@ -836,6 +836,24 @@ def main() -> None:
                                 delta_coarse = delta_coarse_start + progress * (
                                     delta_coarse_end - delta_coarse_start
                                 )
+                                no_bias = 0.0
+                                if cfg.policy.policy_no_bias_warmup_steps > 0:
+                                    bias_progress = min(
+                                        1.0,
+                                        (stage_steps + 1)
+                                        / float(cfg.policy.policy_no_bias_warmup_steps),
+                                    )
+                                else:
+                                    bias_progress = 1.0
+                                no_bias = float(cfg.policy.policy_no_bias_start) + bias_progress * (
+                                    float(cfg.policy.policy_no_bias_end)
+                                    - float(cfg.policy.policy_no_bias_start)
+                                )
+                                if no_bias > 0:
+                                    loss_triplet = loss_triplet.clone()
+                                    loss_triplet[:, Action.NO_VISION] = (
+                                        loss_triplet[:, Action.NO_VISION] + no_bias
+                                    )
                                 if cfg.policy.policy_target_mode == "loss_margin":
                                     policy_targets = compute_policy_targets(
                                         loss_triplet, (delta_coarse, delta_no)

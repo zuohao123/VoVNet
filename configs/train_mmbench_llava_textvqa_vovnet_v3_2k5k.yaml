@@ -44,6 +44,9 @@ policy:
   policy_delta_coarse_end: 0.05
   policy_min_full_ratio: 0.0
   policy_min_full_warmup_steps: 0
+  policy_no_bias_start: 0.002
+  policy_no_bias_end: 0.0
+  policy_no_bias_warmup_steps: 5000
   policy_open_enable: true
   policy_open_quantile: 0.0
   policy_open_margin: 0.0

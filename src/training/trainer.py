@@ -57,6 +57,9 @@ class Trainer:
         policy_delta_coarse_end: float | None = None,
         policy_min_full_ratio: float = 0.0,
         policy_min_full_warmup_steps: int = 0,
+        policy_no_bias_start: float = 0.0,
+        policy_no_bias_end: float = 0.0,
+        policy_no_bias_warmup_steps: int = 0,
         baseline_name: Optional[str] = None,
         finetune_pruning: bool = False,
         cost_warmup_steps: int = 0,
@@ -95,6 +98,9 @@ class Trainer:
         self.policy_delta_coarse_end = policy_delta_coarse_end
         self.policy_min_full_ratio = float(policy_min_full_ratio or 0.0)
         self.policy_min_full_warmup_steps = max(0, int(policy_min_full_warmup_steps))
+        self.policy_no_bias_start = float(policy_no_bias_start)
+        self.policy_no_bias_end = float(policy_no_bias_end)
+        self.policy_no_bias_warmup_steps = max(0, int(policy_no_bias_warmup_steps))
         self.baseline_name = normalize_baseline_name(baseline_name)
         self.finetune_pruning = finetune_pruning
 
@@ -227,6 +233,21 @@ class Trainer:
                             delta_coarse = delta_coarse_start + progress * (
                                 delta_coarse_end - delta_coarse_start
                             )
+                            if self.policy_no_bias_warmup_steps > 0:
+                                bias_progress = min(
+                                    1.0,
+                                    (global_step + 1) / float(self.policy_no_bias_warmup_steps),
+                                )
+                            else:
+                                bias_progress = 1.0
+                            no_bias = float(self.policy_no_bias_start) + bias_progress * (
+                                float(self.policy_no_bias_end) - float(self.policy_no_bias_start)
+                            )
+                            if no_bias > 0:
+                                loss_triplet = loss_triplet.clone()
+                                loss_triplet[:, Action.NO_VISION] = (
+                                    loss_triplet[:, Action.NO_VISION] + no_bias
+                                )
                             if self.policy_target_mode == "loss_margin":
                                 policy_targets = compute_policy_targets(
                                     loss_triplet, (delta_coarse, delta_no)
