@@ -15,7 +15,7 @@ training:
   stage1_baseline_name: "always_full"
   stage1_lambda_cost: 0.0
   stage1_max_steps: 2000
-  stage2_max_steps: 20001
+  stage2_max_steps: 12001
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
@@ -33,17 +33,17 @@ policy:
   gain_loss_weight: 0.0
   gain_margin: 0.2
   policy_target_mode: "loss_margin"
-  policy_ce_weight: 2.0
-  policy_delta_start: 0.1
-  policy_delta_end: 0.0
-  policy_delta_warmup_steps: 6000
-  lambda_cost: 0.0025
+  policy_ce_weight: 1.0
+  policy_delta_start: 0.0
+  policy_delta_end: 0.1
+  policy_delta_warmup_steps: 3000
+  lambda_cost: 0.0015
   cost_scale: 0.05
-  cost_warmup_steps: 6000
-  gumbel_tau: 1.2
+  cost_warmup_steps: 3000
+  gumbel_tau: 1.5
   use_straight_through: true
-  entropy_weight: 0.005
-  explore_prob: 0.05
+  entropy_weight: 0.01
+  explore_prob: 0.1
 
 vision_budget:
   coarse_long_side: 224

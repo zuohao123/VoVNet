@@ -1,6 +1,6 @@
 env:
   CFG_BASE: configs/base.yaml
-  CFG_TRAIN: configs/train_mmbench_llava_textvqa_vovnet_stage2.yaml
+  CFG_TRAIN: configs/train_mmbench_llava_textvqa_vovnet_v3_2k5k.yaml
   EVAL_SINGLE: configs/eval_single_gpu.yaml
   EVAL_PROFILE: configs/eval_profile.yaml
   EVAL_LIMIT: configs/eval_quick_500.yaml
