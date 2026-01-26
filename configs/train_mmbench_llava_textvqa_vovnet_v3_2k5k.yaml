@@ -19,7 +19,7 @@ training:
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
-  summary_every: 2000
+  summary_every: 1000
   mixed_precision: "fp16"
   gradient_checkpointing: true
   lr: 5e-5
@@ -37,16 +37,16 @@ policy:
   policy_ce_weight: 1.0
   policy_delta_start: 0.0
   policy_delta_end: 0.10
-  policy_delta_warmup_steps: 3000
+  policy_delta_warmup_steps: 1000
   policy_delta_no_start: 0.0
   policy_delta_no_end: 0.02
   policy_delta_coarse_start: 0.0
   policy_delta_coarse_end: 0.08
   policy_min_full_ratio: 0.2
-  policy_min_full_warmup_steps: 3000
+  policy_min_full_warmup_steps: 1000
   lambda_cost: 0.002
   cost_scale: 0.05
-  cost_warmup_steps: 3000
+  cost_warmup_steps: 1000
   gumbel_tau: 1.5
   use_straight_through: true
   entropy_weight: 0.01

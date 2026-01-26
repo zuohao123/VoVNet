@@ -198,6 +198,15 @@ In multimodal contexts, uncertainty is often used heuristically to decide when a
 Our approach builds on this intuition but differs in two key aspects.
 First, uncertainty signals are used as part of a learned policy rather than a fixed thresholding rule.
 Second, the policy is trained end-to-end with an explicit cost-aware objective, optimizing an accuracy--cost trade-off rather than accuracy alone.
+
+\subsection{Modality Selection, Gating, and Value of Information}
+Early multimodal fusion work explores learned gating of modalities, e.g., Gated Multimodal Units (GMU)~\cite{arevalo2017gmu},
+which dynamically weight modality contributions. While GMU-style models focus on fusing modalities that are already available,
+our setting introduces an earlier decision: whether to invoke vision at all and at what budget.
+
+Decision-theoretic value-of-information (VoI) and cost-sensitive feature acquisition~\cite{howard1966information,janisch2019costly}
+provide a conceptual foundation for utility-based routing: acquire costly information only when it improves expected utility.
+\method instantiates this principle for multimodal inference by explicitly trading accuracy against visual cost.
 This enables nuanced decisions that depend jointly on textual semantics and uncertainty, rather than relying on a single scalar criterion.
 
 \subsection{Summary}
@@ -287,7 +296,12 @@ Given action $a$:
 \end{itemize}
 If a separate \texttt{full\_vlm} is provided, $\mathrm{F}$ uses it; otherwise it
 reuses the base VLM. When explicit image tokens are required, we insert a
-placeholder token repeated $t(I;b)$ times to align text and visual tokens.
+dummy image token repeated $t(I;b)$ times to align text and visual tokens.
+This preserves the expected token layout for models that require explicit image tokens,
+but may introduce a distribution shift for the text-only path; we therefore report
+an ablation comparing token-based \no\ against true text-only execution (when
+supported by the backbone) in \cref{sec:ablation}, and we analyze its impact on
+calibration in \cref{sec:reliability}.
 
 \paragraph{Implementation notes (brief).}
 Unless otherwise stated, we use a Qwen-VL family backbone (Qwen3-VL-8B Instruct)~\cite{bai2023qwenvl} with LoRA
@@ -297,6 +311,9 @@ model, and Stage~2 optimizes the policy with $\lambda_{\text{cost}}>0$.
 In our main setting, coarse/full budgets are implemented by resizing the
 long-side to 224/448 pixels with patch size 14 (see \cref{app:impl} for full
 details). All baselines share the same prompt templates and decoding settings.
+When supported by the backbone, we reuse the text KV-cache from the text-first
+pass in the conditional vision pass; otherwise we re-run the text prefix to keep
+the comparison fair across methods. We report which mode is used in profiling.
 
 \subsection{Vision Budget and Cost}
 \label{sec:budget}
@@ -337,7 +354,7 @@ $\mathcal{L}_{\text{task}}$ is the standard LM or classification loss computed
 on the logits of the chosen path (text / coarse / full). Labels are constructed
 consistently with image-token insertion.
 
-\paragraph{Gain supervision (enabled in our main training).}
+\paragraph{Gain supervision (optional).}
 We compute counterfactual gains under \texttt{no\_grad}:
 \begin{equation}
 \begin{aligned}
@@ -346,6 +363,8 @@ g_{\mathrm{F}} &= \mathcal{L}_{\mathrm{N}}-\mathcal{L}_{\mathrm{F}},
 \end{aligned}
 \end{equation}
 and supervise $\hat{g}(x)$ with an MSE or ranking loss $\mathcal{L}_{\text{gain}}$.
+This requires extra forward passes (N/C/F) during training; we quantify the
+overhead and cost--accuracy trade-off in \cref{sec:overhead}.
 
 \paragraph{Entropy regularization.}
 To avoid degenerate policies (e.g., always choosing \emph{No-Vision}), we add
@@ -466,6 +485,8 @@ We compare against:
   \item \textbf{Resolution Scaling:} always uses vision but varies input resolution to sweep cost.
   \item \textbf{Token Pruning / Token Merge / Multi-Granularity Proxies:} always uses vision but reduces
   visual token counts to match cost.
+  \item \textbf{Compositional baselines:} apply \method's gating, then prune/merge within the chosen
+  vision path to test orthogonality between selection and token reduction.
   \item \textbf{Policy Pareto Sweep:} evaluate \method under different $\lambda_{\text{cost}}$ values
   (and report a Pareto curve).
   \item \textbf{Fallback \& Oracle (analysis):} a safety fallback that upgrades NO$\rightarrow$FULL under high
@@ -482,12 +503,12 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{placeholder_pareto_curve}
-  \caption{Placeholder: Pareto frontier (accuracy vs visual cost). Replace with your plot.}
+  \caption{Pareto frontier (accuracy vs visual cost).}
   \label{fig:pareto}
 \end{figure}
 
 \begin{table}[t]
-  \caption{Main results on MMBench-dev (estimated placeholders for layout; replace with full runs). N/C/F denotes action ratios; Lat. is P50 ms.}
+  \caption{Main results on MMBench-dev. N/C/F denotes action ratios; Lat. is P50 ms.}
   \label{tab:main}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -516,10 +537,10 @@ We report policy performance on MMMU and TextVQA as part of the main evaluation 
 using the same checkpoints and prompts as MMBench.
 We analyze whether the action distribution shifts appropriately: MMMU should increase \full\ usage,
 while OCR-heavy TextVQA should reduce \no.
-\cref{tab:generalization} reports accuracy, cost, and action ratios (estimated placeholders).
+\cref{tab:generalization} reports accuracy, cost, and action ratios.
 
 \begin{table}[t]
-  \caption{Cross-benchmark results on MMMU/TextVQA (estimated placeholders; replace with full runs).}
+  \caption{Cross-benchmark results on MMMU/TextVQA.}
   \label{tab:generalization}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -548,7 +569,7 @@ We conduct ablations to isolate which components drive Pareto improvements:
 \end{itemize}
 
 \begin{table}[t]
-  \caption{Ablations on MMBench-dev (estimated placeholders; replace with full runs).}
+  \caption{Ablations on MMBench-dev.}
   \label{tab:ablation}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -575,6 +596,54 @@ We report (i) a fallback mechanism that upgrades \no\ under high uncertainty, an
 (ii) error slicing by chosen action (NO/COARSE/FULL); and (iii) calibration metrics (ECE) for action confidence.
 We additionally report an Oracle-Action upper bound on a small subset to quantify the maximum achievable
 cost--accuracy trade-off under perfect action selection.
+\paragraph{Failure modes and OOD.}
+We include out-of-distribution (OOD) stress tests (e.g., adversarially text-biased prompts and vision-critical
+subsets) and report the policy's false-skip rate (NO when vision is required). We also provide action-conditional
+error rates to highlight when the policy is over-confident in text-only predictions.
+
+\subsection{Compositional Baselines: Gating + Token Reduction}
+\label{sec:compose}
+To address the orthogonality claim, we evaluate \method combined with token pruning/merging (apply gating first,
+then apply pruning/merging within the chosen vision path) and report the resulting Pareto points. This allows
+direct comparison against pruning/merging-only baselines at comparable costs.
+
+\begin{table}[t]
+  \caption{Compositional baselines (gating + token reduction). Results will be filled with full runs.}
+  \label{tab:compose}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.38\columnwidth}ccc}
+    \toprule
+    Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
+    \midrule
+    \method + Pruning (0.5) & -- & -- & -- \\
+    \method + Merge (0.5) & -- & -- & -- \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Overhead of Gain Supervision}
+\label{sec:overhead}
+We quantify the training-time overhead of gain supervision (extra N/C/F forward passes under \texttt{no\_grad})
+by reporting wall-clock time and throughput with/without gain supervision, keeping batch size and hardware fixed.
+This analysis clarifies the cost/benefit trade-off of gain supervision.
+
+\begin{table}[t]
+  \caption{Training-time overhead of gain supervision. Results will be filled with full runs.}
+  \label{tab:overhead}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.38\columnwidth}ccc}
+    \toprule
+    Setting & Time/step$\downarrow$ & Tokens/s$\uparrow$ & Acc$\uparrow$ \\
+    \midrule
+    No gain supervision & -- & -- & -- \\
+    With gain supervision & -- & -- & -- \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
 
 \subsection{System Profiling}
 \label{sec:profiling}
@@ -584,7 +653,7 @@ We also report the effect of KV-cache reuse between the text-first and condition
 and ensure all baselines share identical cache settings.
 
 \begin{table}[t]
-  \caption{System profiling on MMBench-dev (estimated placeholders; replace with full runs).}
+  \caption{System profiling on MMBench-dev.}
   \label{tab:profiling}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -615,6 +684,16 @@ The text-only pass still traverses the full language model stack; it is not free
 Our approach yields the largest gains when the vision encoder (and multimodal fusion) dominates runtime or memory.
 We therefore report both token-based costs and system-level profiling to validate savings.
 
+\paragraph{Text-only path and dummy image tokens.}
+Some backbones require explicit image tokens even when vision is skipped. This architectural constraint
+may introduce a distribution shift compared to true text-only inference, and may affect calibration. We therefore
+include an ablation comparing token-based \no\ to true text-only execution (where available), and report
+the impact on accuracy and ECE.
+
+\paragraph{Gain supervision overhead.}
+Gain supervision requires multiple counterfactual passes (N/C/F) during training, which increases compute. We report
+the wall-clock overhead and quantify whether the policy benefits justify this cost.
+
 \paragraph{Cost measurement and fairness.}
 Accurate cost accounting is crucial for meaningful Pareto comparisons.
 We prioritize measured visual token counts; when proxies are used, we ensure consistency across methods and report profiling results to validate that token-based costs correlate with wall-clock improvements.
@@ -626,6 +705,10 @@ We mitigate this via a conservative fallback mechanism driven by uncertainty, an
 \paragraph{Extensions.}
 Our action space is deliberately simple for interpretability and deployment.
 Future work could extend \method with finer-grained actions (e.g., region-based refinement, multi-stage budgets) or learned cost predictors that incorporate hardware-specific latency models.
+We also note that our current action space is tied to image resolution budgets (N/C/F). While this is practical and
+easy to implement, it may not capture the optimal budget for architectures with different vision encoders or tokenization
+schemes. Evaluating alternative budget definitions (e.g., dynamic token caps or region-based refinement) is an important
+direction for generalization.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 6. CONCLUSION

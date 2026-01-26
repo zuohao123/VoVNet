@@ -190,9 +190,12 @@ class Trainer:
                                 cost_triplet = torch.stack(
                                     [zeros, token_count_coarse, token_count_full], dim=-1
                                 )
+                                loss_scale = (
+                                    loss_triplet.detach().mean(dim=-1, keepdim=True).clamp(min=1e-6)
+                                )
                                 loss_triplet = loss_triplet + cost_triplet * cost_scale * float(
                                     self.current_lambda_cost
-                                )
+                                ) * loss_scale
                             if self.policy_delta_warmup_steps > 0:
                                 progress = min(
                                     1.0,

@@ -46,18 +46,19 @@ def compute_entropy_loss(
 def compute_policy_targets(
     loss_triplet: Tensor, delta: float | tuple[float, float]
 ) -> Tensor:
-    """Select action targets from per-action losses with separate coarse/no margins."""
+    """Pick the cheapest action within a margin of the best loss."""
     loss_no, loss_coarse, loss_full = loss_triplet.unbind(dim=-1)
     if isinstance(delta, (tuple, list)):
         delta_coarse, delta_no = float(delta[0]), float(delta[1])
     else:
         delta_coarse = float(delta)
         delta_no = float(delta)
+    best = torch.stack([loss_no, loss_coarse, loss_full], dim=-1).min(dim=-1).values
     target = torch.full(
         loss_no.shape, Action.FULL_VISION, device=loss_no.device, dtype=torch.long
     )
-    target[loss_coarse <= loss_full + delta_coarse] = Action.COARSE_VISION
-    target[loss_no <= loss_full + delta_no] = Action.NO_VISION
+    target[loss_coarse <= best + delta_coarse] = Action.COARSE_VISION
+    target[loss_no <= best + delta_no] = Action.NO_VISION
     return target
 
 
