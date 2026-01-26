@@ -34,8 +34,8 @@ policy:
   gain_margin: 0.2
   policy_target_mode: "loss_margin"
   policy_ce_weight: 2.0
-  policy_delta_start: -0.2
-  policy_delta_end: -0.05
+  policy_delta_start: 0.1
+  policy_delta_end: 0.0
   policy_delta_warmup_steps: 6000
   lambda_cost: 0.0025
   cost_scale: 0.05
