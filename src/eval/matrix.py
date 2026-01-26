@@ -29,6 +29,26 @@ from src.utils.profiling import BatchProfiler
 
 logger = logging.getLogger(__name__)
 
+def _ensure_lora(model: VoVNet, cfg: Config) -> None:
+    if not getattr(cfg.model, "use_lora", False):
+        return
+
+    def _apply(vlm: Optional[BaseVLM]) -> None:
+        if vlm is None:
+            return
+        if hasattr(getattr(vlm, "model", None), "peft_config"):
+            return
+        vlm.apply_lora(
+            cfg.model.lora_r,
+            cfg.model.lora_alpha,
+            cfg.model.lora_dropout,
+            cfg.model.lora_target_modules,
+        )
+
+    _apply(model.base_vlm)
+    if model.full_vlm is not None and model.full_vlm is not model.base_vlm:
+        _apply(model.full_vlm)
+
 
 
 
@@ -46,7 +66,7 @@ def build_model(cfg: Config) -> VoVNet:
             torch_dtype=cfg.model.torch_dtype,
         )
     budget = VisionBudgetController(**cfg.vision_budget.__dict__)
-    return VoVNet(
+    model = VoVNet(
         base_vlm=base_vlm,
         full_vlm=full_vlm,
         vision_budget=budget,
@@ -62,6 +82,8 @@ def build_model(cfg: Config) -> VoVNet:
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )
+    _ensure_lora(model, cfg)
+    return model
 
 
 def load_eval_checkpoint(
