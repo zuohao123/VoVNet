@@ -192,7 +192,7 @@ def build_stage_schedule(cfg: Config) -> List[Dict[str, Any]]:
 
 
 def _move_batch(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
-    for key in ("input_ids", "attention_mask", "labels"):
+    for key in ("input_ids", "attention_mask", "labels", "has_choices"):
         if key in batch and isinstance(batch[key], torch.Tensor):
             batch[key] = batch[key].to(device, non_blocking=True)
     return batch
@@ -844,6 +844,66 @@ def main() -> None:
                                     raise ValueError(
                                         f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
                                     )
+                                if cfg.policy.policy_open_enable:
+                                    has_choices = batch.get("has_choices")
+                                    if has_choices is not None:
+                                        open_mask = ~has_choices.bool()
+                                        if open_mask.any():
+                                            loss_no = loss_triplet[:, Action.NO_VISION]
+                                            loss_coarse = loss_triplet[:, Action.COARSE_VISION]
+                                            loss_full = loss_triplet[:, Action.FULL_VISION]
+                                            if cfg.policy.policy_open_use_best_vis:
+                                                best_vis = torch.where(
+                                                    loss_coarse <= loss_full,
+                                                    torch.full(
+                                                        loss_coarse.shape,
+                                                        int(Action.COARSE_VISION),
+                                                        device=loss_coarse.device,
+                                                        dtype=torch.long,
+                                                    ),
+                                                    torch.full(
+                                                        loss_full.shape,
+                                                        int(Action.FULL_VISION),
+                                                        device=loss_full.device,
+                                                        dtype=torch.long,
+                                                    ),
+                                                )
+                                                best_vis_loss = torch.minimum(loss_coarse, loss_full)
+                                            else:
+                                                best_vis = torch.full(
+                                                    loss_full.shape,
+                                                    int(Action.FULL_VISION),
+                                                    device=loss_full.device,
+                                                    dtype=torch.long,
+                                                )
+                                                best_vis_loss = loss_full
+                                            diff = loss_no - best_vis_loss
+                                            diff_open = diff[open_mask]
+                                            if diff_open.numel() == 1:
+                                                threshold = float(diff_open.detach().item())
+                                            else:
+                                                threshold = float(
+                                                    torch.quantile(
+                                                        diff_open.detach(),
+                                                        float(cfg.policy.policy_open_quantile),
+                                                    ).item()
+                                                )
+                                            margin = float(cfg.policy.policy_open_margin)
+                                            if margin > 0:
+                                                threshold = min(threshold, margin)
+                                            allow_no = diff <= threshold
+                                            open_targets = torch.where(
+                                                allow_no,
+                                                torch.full(
+                                                    best_vis.shape,
+                                                    int(Action.NO_VISION),
+                                                    device=best_vis.device,
+                                                    dtype=torch.long,
+                                                ),
+                                                best_vis,
+                                            )
+                                            policy_targets = policy_targets.clone()
+                                            policy_targets[open_mask] = open_targets[open_mask]
                                 min_full_ratio = float(cfg.policy.policy_min_full_ratio or 0.0)
                                 if min_full_ratio > 0:
                                     if cfg.policy.policy_min_full_warmup_steps > 0:

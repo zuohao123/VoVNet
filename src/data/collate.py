@@ -218,6 +218,10 @@ class VLMDataCollator:
         images = [item.get("image") for item in batch]
         images = [img if img is not None else _blank_image() for img in images]
 
+        has_choices = torch.tensor(
+            [len(choices) > 0 for choices in cleaned_choices], dtype=torch.bool
+        )
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -226,4 +230,5 @@ class VLMDataCollator:
             "questions": questions,
             "answers": answer_refs,
             "meta": [item.get("meta", {}) for item in batch],
+            "has_choices": has_choices,
         }

@@ -44,6 +44,10 @@ policy:
   policy_delta_coarse_end: 0.08
   policy_min_full_ratio: 0.2
   policy_min_full_warmup_steps: 1000
+  policy_open_enable: true
+  policy_open_quantile: 0.2
+  policy_open_margin: 0.02
+  policy_open_use_best_vis: true
   lambda_cost: 0.002
   cost_scale: 0.05
   cost_warmup_steps: 1000
