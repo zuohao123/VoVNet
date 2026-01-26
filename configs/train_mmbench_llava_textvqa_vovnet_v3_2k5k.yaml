@@ -34,7 +34,7 @@ policy:
   gain_loss_weight: 0.0
   gain_margin: 0.2
   policy_target_mode: "loss_margin"
-  policy_ce_weight: 1.0
+  policy_ce_weight: 5.0
   policy_delta_start: 0.0
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 1000
@@ -44,20 +44,20 @@ policy:
   policy_delta_coarse_end: 0.05
   policy_min_full_ratio: 0.0
   policy_min_full_warmup_steps: 0
-  policy_no_bias_start: 0.005
+  policy_no_bias_start: 0.01
   policy_no_bias_end: 0.0
-  policy_no_bias_warmup_steps: 2000
+  policy_no_bias_warmup_steps: 1000
   policy_open_enable: true
-  policy_open_quantile: 0.2
-  policy_open_margin: 0.05
+  policy_open_quantile: 0.0
+  policy_open_margin: 0.0
   policy_open_use_best_vis: true
   lambda_cost: 0.0005
   cost_scale: 0.05
   cost_warmup_steps: 3000
   gumbel_tau: 1.5
   use_straight_through: true
-  entropy_weight: 0.01
-  explore_prob: 0.05
+  entropy_weight: 0.02
+  explore_prob: 0.2
 
 vision_budget:
   coarse_long_side: 224
