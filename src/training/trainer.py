@@ -168,6 +168,19 @@ class Trainer:
                     if actions is None and self.policy_target_mode != "none":
                         loss_triplet = outputs.get("loss_triplet")
                         if loss_triplet is not None:
+                            # Make policy targets cost-aware by adding a cost penalty.
+                            token_count_coarse = outputs.get("token_count_coarse")
+                            token_count_full = outputs.get("token_count_full")
+                            if token_count_coarse is not None and token_count_full is not None:
+                                raw_model = getattr(self.model, "module", self.model)
+                                cost_scale = float(getattr(raw_model, "cost_scale", 1.0))
+                                zeros = torch.zeros_like(token_count_coarse)
+                                cost_triplet = torch.stack(
+                                    [zeros, token_count_coarse, token_count_full], dim=-1
+                                )
+                                loss_triplet = loss_triplet + cost_triplet * cost_scale * float(
+                                    self.current_lambda_cost
+                                )
                             if self.policy_delta_warmup_steps > 0:
                                 progress = min(
                                     1.0,
