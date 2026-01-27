@@ -136,6 +136,20 @@ def _extract_answer_list(ref: object) -> List[str]:
         aliases = ref.get("aliases")
         if isinstance(aliases, list) and aliases:
             return [str(a) for a in aliases if a not in (None, "")]
+        answers_list = ref.get("answers")
+        if isinstance(answers_list, list) and answers_list:
+            out: List[str] = []
+            for item in answers_list:
+                if item is None:
+                    continue
+                if isinstance(item, dict):
+                    ans = item.get("answer") or item.get("text") or item.get("value")
+                else:
+                    ans = item
+                if ans not in (None, ""):
+                    out.append(str(ans))
+            if out:
+                return out
         answer_text = ref.get("answer")
         if answer_text not in (None, ""):
             return [str(answer_text)]

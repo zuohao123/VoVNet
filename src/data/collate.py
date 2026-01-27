@@ -1,8 +1,9 @@
 """Data collators for VLM training and evaluation."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from PIL import Image
 import torch
@@ -109,6 +110,12 @@ def _coerce_answer_text(answer: Any, choices: List[str]) -> str:
         if letter:
             return letter
     if isinstance(answer, dict):
+        answers = answer.get("answers")
+        if isinstance(answers, list) and answers:
+            picked = _pick_answer_from_list(answers)
+            if picked:
+                return picked
+    if isinstance(answer, dict):
         for key in ("text", "answer", "raw", "label"):
             value = answer.get(key)
             if value not in (None, ""):
@@ -120,6 +127,29 @@ def _coerce_answer_text(answer: Any, choices: List[str]) -> str:
                 return str(item)
         return ""
     return "" if answer is None else str(answer)
+
+
+def _pick_answer_from_list(values: Iterable[Any]) -> str:
+    """Pick a stable representative answer from multiple annotations."""
+    seen: List[str] = []
+    norm_to_first: Dict[str, str] = {}
+    counts: Counter[str] = Counter()
+    for item in values:
+        if item in (None, ""):
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        norm = text.lower()
+        counts[norm] += 1
+        if norm not in norm_to_first:
+            norm_to_first[norm] = text
+        seen.append(text)
+    if not counts:
+        return ""
+    # Most frequent normalized answer; ties resolve to earliest occurrence.
+    best_norm, _ = max(counts.items(), key=lambda kv: (kv[1], -seen.index(norm_to_first[kv[0]])))
+    return norm_to_first[best_norm]
 
 
 def _append_before_answer(prompt: str, addition: str) -> str:
