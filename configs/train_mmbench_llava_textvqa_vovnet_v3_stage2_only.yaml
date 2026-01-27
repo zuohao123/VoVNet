@@ -1,0 +1,6 @@
+# Stage-2-only override: skip stage1 and run policy training.
+training:
+  epochs: 7
+  stage1_epochs: 0
+  stage2_max_steps: 40001
+
