@@ -192,7 +192,7 @@ def main() -> None:
         max_length = getattr(cfg.training, "max_length", None)
     collator = VLMDataCollator(tokenizer, cfg.data.prompt_template, max_length)
 
-    cost_weight = args.cost_weight if args.cost_weight is not None else cfg.training.lambda_cost
+    cost_weight = args.cost_weight if args.cost_weight is not None else cfg.policy.lambda_cost
     print(f"cost_weight={cost_weight}")
 
     report: Dict[str, Any] = {"checkpoint": args.checkpoint, "datasets": {}}
