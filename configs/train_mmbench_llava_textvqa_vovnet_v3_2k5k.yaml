@@ -1,6 +1,6 @@
 # Two-stage training (2k + 5k) with per-sample prompts and MC letter targets.
 data:
-  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train_with_prompt_norm.jsonl"
+  train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train_with_prompt_norm_relabeled.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_dev_text_prompt.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
