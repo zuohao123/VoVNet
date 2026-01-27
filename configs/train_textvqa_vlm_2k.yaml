@@ -1,7 +1,7 @@
 # TextVQA-only VLM finetune (stage1 only, no policy).
 data:
-  train_jsonl: "data/processed/textvqa/textvqa_train.jsonl"
-  eval_jsonl: "data/processed/textvqa/textvqa_validation.jsonl"
+  train_jsonl: "data/processed/textvqa/textvqa_train_prompt.jsonl"
+  eval_jsonl: "data/processed/textvqa/textvqa_validation_prompt.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
 
 model:

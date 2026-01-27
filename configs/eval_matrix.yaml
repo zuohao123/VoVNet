@@ -17,6 +17,6 @@ datasets:
     metric: "exact_match"
   - name: "text_heavy_vqa"
     source: "jsonl"
-    jsonl: "data/processed/textvqa/textvqa_validation.jsonl"
+    jsonl: "data/processed/textvqa/textvqa_validation_prompt.jsonl"
     prompt_template: "Question: {question}\nAnswer:"
     metric: "exact_match"

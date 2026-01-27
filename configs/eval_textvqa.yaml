@@ -7,4 +7,4 @@ defaults:
 datasets:
   - name: "textvqa"
     source: "jsonl"
-    jsonl: "data/processed/textvqa/textvqa_validation.jsonl"
+    jsonl: "data/processed/textvqa/textvqa_validation_prompt.jsonl"
