@@ -15,7 +15,7 @@ training:
   stage1_baseline_name: "always_full"
   stage1_lambda_cost: 0.0
   stage1_max_steps: 1000
-  stage2_max_steps: 40001
+  stage2_max_steps: 20001
   per_device_batch_size: 1
   gradient_accumulation: 4
   log_every: 100
@@ -36,47 +36,46 @@ policy:
   policy_target_mode: "loss_margin"
   policy_ce_weight: 1.0
   policy_ce_weight_start: 1.0
-  policy_ce_weight_end: 3.0
-  policy_ce_weight_warmup_steps: 15000
+  policy_ce_weight_end: 2.0
+  policy_ce_weight_warmup_steps: 12000
   policy_delta_start: 0.0
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 1000
   # Keep delta magnitudes comparable to observed loss scales (~1e-3 to 1e-2).
-  policy_delta_no_start: 0.0
-  policy_delta_no_end: 0.005
-  policy_delta_no_warmup_steps: 4000
-  policy_delta_coarse_start: 0.003
-  policy_delta_coarse_end: 0.012
-  policy_delta_coarse_warmup_steps: 8000
-  # Maintain a modest full-vision floor to avoid accuracy collapse.
-  policy_min_full_ratio: 0.08
-  policy_min_full_warmup_steps: 10000
+  policy_delta_no_start: 0.003
+  policy_delta_no_end: 0.0015
+  policy_delta_no_warmup_steps: 12000
+  policy_delta_coarse_start: 0.01
+  policy_delta_coarse_end: 0.004
+  policy_delta_coarse_warmup_steps: 12000
+  policy_min_full_ratio: 0.10
+  policy_min_full_warmup_steps: 8000
   policy_no_bias_start: 0.0
-  policy_no_bias_end: 0.005
-  policy_no_bias_warmup_steps: 8000
+  policy_no_bias_end: 0.003
+  policy_no_bias_warmup_steps: 10000
   policy_open_enable: true
-  policy_open_quantile: 0.2
+  policy_open_quantile: 0.15
   policy_open_quantile_start: 0.0
-  policy_open_quantile_end: 0.2
-  policy_open_quantile_warmup_steps: 8000
+  policy_open_quantile_end: 0.15
+  policy_open_quantile_warmup_steps: 10000
   policy_open_margin: 0.0
   policy_open_use_best_vis: true
-  policy_open_force_visual_warmup_steps: 5000
+  policy_open_force_visual_warmup_steps: 3000
   policy_open_force_visual_action: "best_vis"
-  policy_open_visual_bias_start: 0.01
-  policy_open_visual_bias_end: 0.005
-  policy_open_visual_bias_warmup_steps: 20000
+  policy_open_visual_bias_start: 0.02
+  policy_open_visual_bias_end: 0.002
+  policy_open_visual_bias_warmup_steps: 12000
   enable_soft_targets: true
   soft_target_temperature: 1.0
   lambda_cost: 0.0005
   cost_scale: 0.05
-  cost_warmup_steps: 3000
+  cost_warmup_steps: 2000
   gumbel_tau: 1.5
   use_straight_through: true
   entropy_weight: 0.05
   entropy_weight_start: 0.05
-  entropy_weight_end: 0.02
-  entropy_weight_warmup_steps: 20000
+  entropy_weight_end: 0.03
+  entropy_weight_warmup_steps: 12000
   explore_prob: 0.2
 
 vision_budget:
