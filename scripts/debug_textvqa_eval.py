@@ -187,7 +187,10 @@ def main() -> None:
     specs = _prepare_specs(specs, args.max_samples)
 
     tokenizer = raw_model.base_vlm.tokenizer
-    collator = VLMDataCollator(tokenizer, cfg.data.prompt_template, cfg.data.max_length)
+    max_length = getattr(cfg.data, "max_length", None)
+    if max_length is None:
+        max_length = getattr(cfg.training, "max_length", None)
+    collator = VLMDataCollator(tokenizer, cfg.data.prompt_template, max_length)
 
     cost_weight = args.cost_weight if args.cost_weight is not None else cfg.training.lambda_cost
     print(f"cost_weight={cost_weight}")
