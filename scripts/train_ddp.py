@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -237,6 +238,88 @@ def _schedule_value(start: float, end: float, warmup_steps: int, step: int) -> f
     else:
         progress = 1.0
     return float(start) + progress * (float(end) - float(start))
+
+
+def _guard_needed_now(
+    *,
+    ratio: float,
+    guard_window: int,
+    guard_seen: int,
+    current_count: int,
+    batch_size: int,
+) -> int:
+    """Compute how many samples must be forced now to hit a window quota."""
+    if guard_window <= 0 or ratio <= 0.0:
+        return 0
+    required = int(math.ceil(float(ratio) * float(guard_window)))
+    remaining_after = max(0, guard_window - (guard_seen + batch_size))
+    return max(0, required - (current_count + remaining_after))
+
+
+def _apply_guard_quotas(
+    policy_targets: torch.Tensor,
+    loss_triplet: torch.Tensor,
+    *,
+    guard_window: int,
+    guard_seen: int,
+    guard_counts: list[int],
+    min_full_ratio: float,
+    min_coarse_ratio: float,
+) -> tuple[torch.Tensor, torch.Tensor | None, int, list[int]]:
+    """Enforce per-window minimum action ratios, even with batch size 1."""
+    if guard_window <= 0 or policy_targets.numel() == 0:
+        return policy_targets, None, guard_seen, guard_counts
+    if min_full_ratio <= 0.0 and min_coarse_ratio <= 0.0:
+        return policy_targets, None, guard_seen, guard_counts
+
+    batch_size = int(policy_targets.shape[0])
+    forced_mask = torch.zeros_like(policy_targets, dtype=torch.bool)
+
+    def _force_action(action: Action, need: int) -> None:
+        nonlocal forced_mask, policy_targets
+        if need <= 0:
+            return
+        candidates = policy_targets != action
+        # Do not override FULL when satisfying COARSE quota.
+        if action == Action.COARSE_VISION:
+            candidates = candidates & (policy_targets != Action.FULL_VISION)
+        idx = candidates.nonzero(as_tuple=False).squeeze(-1)
+        if idx.numel() == 0:
+            return
+        action_losses = loss_triplet[idx, int(action)]
+        order = torch.argsort(action_losses)
+        pick = idx[order[:need]]
+        policy_targets[pick] = int(action)
+        forced_mask[pick] = True
+
+    need_full = _guard_needed_now(
+        ratio=min_full_ratio,
+        guard_window=guard_window,
+        guard_seen=guard_seen,
+        current_count=int(guard_counts[int(Action.FULL_VISION)]),
+        batch_size=batch_size,
+    )
+    _force_action(Action.FULL_VISION, need_full)
+
+    need_coarse = _guard_needed_now(
+        ratio=min_coarse_ratio,
+        guard_window=guard_window,
+        guard_seen=guard_seen,
+        current_count=int(guard_counts[int(Action.COARSE_VISION)]),
+        batch_size=batch_size,
+    )
+    _force_action(Action.COARSE_VISION, need_coarse)
+
+    counts_batch = torch.bincount(policy_targets, minlength=len(Action)).tolist()
+    guard_counts = [int(guard_counts[i]) + int(counts_batch[i]) for i in range(len(Action))]
+    guard_seen += batch_size
+    if guard_seen >= guard_window:
+        guard_seen = 0
+        guard_counts = [0] * len(Action)
+
+    if not forced_mask.any():
+        forced_mask = None
+    return policy_targets, forced_mask, guard_seen, guard_counts
 
 
 def _log_step(
@@ -826,6 +909,16 @@ def main() -> None:
         collapse_counters_sampled = [0] * len(Action)
         collapse_counters_argmax = [0] * len(Action)
         collapse_counters_target = [0] * len(Action)
+        guard_window = int(getattr(cfg.policy, "policy_guard_window", 0) or 0)
+        guard_seen = 0
+        guard_counts = [0] * len(Action)
+        if rank == 0 and stage_baseline is None and guard_window > 0:
+            logger.info(
+                "Policy guard enabled: window=%d min_full=%.3f min_coarse=%.3f",
+                guard_window,
+                float(cfg.policy.policy_min_full_ratio or 0.0),
+                float(getattr(cfg.policy, "policy_min_coarse_ratio", 0.0) or 0.0),
+            )
 
         def _maybe_warn_collapse(kind: str, ratios: list[float], counters: list[int]) -> None:
             if not collapse_warn_enabled:
@@ -1108,32 +1201,38 @@ def main() -> None:
                                         )
                                     policy_targets_hard = policy_targets_hard.clone()
                                     policy_targets_hard[open_mask] = open_targets[open_mask]
-                                min_full_ratio = float(cfg.policy.policy_min_full_ratio or 0.0)
-                                if min_full_ratio > 0:
-                                    if cfg.policy.policy_min_full_warmup_steps > 0:
-                                        warmup = float(cfg.policy.policy_min_full_warmup_steps)
-                                        min_full_ratio = min_full_ratio * min(
-                                            1.0, (stage_steps + 1) / warmup
-                                        )
-                                    if min_full_ratio > 0:
-                                        full_mask = policy_targets_hard == Action.FULL_VISION
-                                        full_count = int(full_mask.sum().item())
-                                        needed = int(
-                                            max(
-                                                0,
-                                                round(min_full_ratio * float(batch_size)) - full_count,
-                                            )
-                                        )
-                                        if needed > 0:
-                                            candidates = (policy_targets_hard != Action.FULL_VISION).nonzero(
-                                                as_tuple=False
-                                            )
-                                            if candidates.numel() > 0:
-                                                perm = torch.randperm(
-                                                    candidates.shape[0], device=candidates.device
-                                                )
-                                                pick = candidates[perm[:needed]].squeeze(-1)
-                                                policy_targets_hard[pick] = Action.FULL_VISION
+                                min_full_ratio_step = float(cfg.policy.policy_min_full_ratio or 0.0)
+                                if min_full_ratio_step > 0 and cfg.policy.policy_min_full_warmup_steps > 0:
+                                    warmup = float(cfg.policy.policy_min_full_warmup_steps)
+                                    min_full_ratio_step = min_full_ratio_step * min(
+                                        1.0, (stage_steps + 1) / warmup
+                                    )
+                                min_coarse_ratio_step = float(
+                                    getattr(cfg.policy, "policy_min_coarse_ratio", 0.0) or 0.0
+                                )
+                                min_coarse_warmup = int(
+                                    getattr(cfg.policy, "policy_min_coarse_warmup_steps", 0) or 0
+                                )
+                                if min_coarse_ratio_step > 0 and min_coarse_warmup > 0:
+                                    min_coarse_ratio_step = min_coarse_ratio_step * min(
+                                        1.0, (stage_steps + 1) / float(min_coarse_warmup)
+                                    )
+                                guard_forced_mask = None
+                                if policy_targets_hard is not None and guard_window > 0:
+                                    (
+                                        policy_targets_hard,
+                                        guard_forced_mask,
+                                        guard_seen,
+                                        guard_counts,
+                                    ) = _apply_guard_quotas(
+                                        policy_targets_hard,
+                                        loss_triplet,
+                                        guard_window=guard_window,
+                                        guard_seen=guard_seen,
+                                        guard_counts=guard_counts,
+                                        min_full_ratio=float(min_full_ratio_step),
+                                        min_coarse_ratio=float(min_coarse_ratio_step),
+                                    )
                                 if cfg.policy.enable_soft_targets and policy_targets_hard is not None:
                                     temp = float(cfg.policy.soft_target_temperature)
                                     policy_targets_soft = torch.softmax(
@@ -1149,9 +1248,16 @@ def main() -> None:
                                         ).float()
                                         policy_targets_soft = policy_targets_soft.clone()
                                         policy_targets_soft[open_mask] = open_onehot
-                                    if min_full_ratio > 0:
+                                    if guard_forced_mask is not None and guard_forced_mask.any():
+                                        guard_onehot = F.one_hot(
+                                            policy_targets_hard[guard_forced_mask],
+                                            num_classes=len(Action),
+                                        ).float()
+                                        policy_targets_soft = policy_targets_soft.clone()
+                                        policy_targets_soft[guard_forced_mask] = guard_onehot
+                                    if min_full_ratio_step > 0:
                                         policy_targets_soft = _enforce_min_full_ratio_soft(
-                                            policy_targets_soft, float(min_full_ratio)
+                                            policy_targets_soft, float(min_full_ratio_step)
                                         )
                         losses = compute_total_loss(
                             outputs["logits"],

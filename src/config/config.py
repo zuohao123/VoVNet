@@ -82,8 +82,11 @@ class PolicyConfig:
     policy_delta_coarse_start: float | None = None
     policy_delta_coarse_end: float | None = None
     policy_delta_coarse_warmup_steps: int | None = None
+    policy_guard_window: int = 0
     policy_min_full_ratio: float = 0.0
     policy_min_full_warmup_steps: int = 0
+    policy_min_coarse_ratio: float = 0.0
+    policy_min_coarse_warmup_steps: int = 0
     policy_no_bias_start: float = 0.0
     policy_no_bias_end: float = 0.0
     policy_no_bias_warmup_steps: int = 0
@@ -284,10 +287,18 @@ class Config:
             and self.policy.policy_delta_coarse_warmup_steps < 0
         ):
             raise ValueError("policy.policy_delta_coarse_warmup_steps must be >= 0")
+        if self.policy.policy_guard_window < 0:
+            raise ValueError("policy.policy_guard_window must be >= 0")
         if not (0.0 <= self.policy.policy_min_full_ratio <= 1.0):
             raise ValueError("policy.policy_min_full_ratio must be in [0, 1]")
         if self.policy.policy_min_full_warmup_steps < 0:
             raise ValueError("policy.policy_min_full_warmup_steps must be >= 0")
+        if not (0.0 <= self.policy.policy_min_coarse_ratio <= 1.0):
+            raise ValueError("policy.policy_min_coarse_ratio must be in [0, 1]")
+        if self.policy.policy_min_coarse_warmup_steps < 0:
+            raise ValueError("policy.policy_min_coarse_warmup_steps must be >= 0")
+        if self.policy.policy_min_full_ratio + self.policy.policy_min_coarse_ratio > 1.0:
+            raise ValueError("policy min_full_ratio + min_coarse_ratio must be <= 1.0")
         if self.policy.policy_no_bias_start < 0:
             raise ValueError("policy.policy_no_bias_start must be >= 0")
         if self.policy.policy_no_bias_end < 0:
@@ -611,11 +622,20 @@ def _coerce_types(cfg: Config) -> None:
         "policy.policy_delta_coarse_warmup_steps",
         allow_none=True,
     )
+    cfg.policy.policy_guard_window = _to_int(
+        cfg.policy.policy_guard_window, "policy.policy_guard_window"
+    )
     cfg.policy.policy_min_full_ratio = _to_float(
         cfg.policy.policy_min_full_ratio, "policy.policy_min_full_ratio"
     )
     cfg.policy.policy_min_full_warmup_steps = _to_int(
         cfg.policy.policy_min_full_warmup_steps, "policy.policy_min_full_warmup_steps"
+    )
+    cfg.policy.policy_min_coarse_ratio = _to_float(
+        cfg.policy.policy_min_coarse_ratio, "policy.policy_min_coarse_ratio"
+    )
+    cfg.policy.policy_min_coarse_warmup_steps = _to_int(
+        cfg.policy.policy_min_coarse_warmup_steps, "policy.policy_min_coarse_warmup_steps"
     )
     cfg.policy.policy_no_bias_start = _to_float(
         cfg.policy.policy_no_bias_start, "policy.policy_no_bias_start"

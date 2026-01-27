@@ -41,32 +41,35 @@ policy:
   policy_delta_start: 0.0
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 1000
-  # Keep delta magnitudes comparable to observed loss scales (~1e-3 to 1e-2).
-  policy_delta_no_start: 0.003
-  policy_delta_no_end: 0.0015
-  policy_delta_no_warmup_steps: 12000
-  policy_delta_coarse_start: 0.01
+  # More conservative deltas + guard rails reduce mid-training collapse.
+  policy_delta_no_start: 0.006
+  policy_delta_no_end: 0.002
+  policy_delta_no_warmup_steps: 8000
+  policy_delta_coarse_start: 0.012
   policy_delta_coarse_end: 0.004
-  policy_delta_coarse_warmup_steps: 12000
-  policy_min_full_ratio: 0.10
-  policy_min_full_warmup_steps: 8000
+  policy_delta_coarse_warmup_steps: 8000
+  policy_guard_window: 2048
+  policy_min_full_ratio: 0.06
+  policy_min_full_warmup_steps: 6000
+  policy_min_coarse_ratio: 0.12
+  policy_min_coarse_warmup_steps: 6000
   policy_no_bias_start: 0.0
-  policy_no_bias_end: 0.003
-  policy_no_bias_warmup_steps: 10000
+  policy_no_bias_end: 0.004
+  policy_no_bias_warmup_steps: 8000
   policy_open_enable: true
   policy_open_quantile: 0.15
   policy_open_quantile_start: 0.0
-  policy_open_quantile_end: 0.15
-  policy_open_quantile_warmup_steps: 10000
-  policy_open_margin: 0.0
+  policy_open_quantile_end: 0.08
+  policy_open_quantile_warmup_steps: 8000
+  policy_open_margin: 0.01
   policy_open_use_best_vis: true
-  policy_open_force_visual_warmup_steps: 3000
+  policy_open_force_visual_warmup_steps: 4000
   policy_open_force_visual_action: "best_vis"
-  policy_open_visual_bias_start: 0.02
-  policy_open_visual_bias_end: 0.002
-  policy_open_visual_bias_warmup_steps: 12000
+  policy_open_visual_bias_start: 0.015
+  policy_open_visual_bias_end: 0.001
+  policy_open_visual_bias_warmup_steps: 10000
   enable_soft_targets: true
-  soft_target_temperature: 1.0
+  soft_target_temperature: 1.5
   lambda_cost: 0.0005
   cost_scale: 0.05
   cost_warmup_steps: 2000
