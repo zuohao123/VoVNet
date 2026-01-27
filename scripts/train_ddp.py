@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -230,6 +231,14 @@ def _configure_cuda(rank: int) -> None:
         )
 
 
+def _schedule_value(start: float, end: float, warmup_steps: int, step: int) -> float:
+    if warmup_steps > 0:
+        progress = min(1.0, (step + 1) / float(warmup_steps))
+    else:
+        progress = 1.0
+    return float(start) + progress * (float(end) - float(start))
+
+
 def _log_step(
     avg_losses: Dict[str, float],
     outputs: Dict[str, Any],
@@ -239,15 +248,40 @@ def _log_step(
     lambda_cost: float,
     train_profiler: BatchProfiler,
     model: nn.Module,
+    *,
+    argmax_actions: torch.Tensor | None = None,
+    policy_targets: torch.Tensor | None = None,
+    loss_triplet: torch.Tensor | None = None,
+    lambda_policy: float | None = None,
+    lambda_entropy: float | None = None,
+    open_quantile: float | None = None,
 ) -> None:
     actions = outputs["actions"]
-    action_rates = torch.bincount(actions, minlength=3).float() / actions.numel()
+    num_actions = len(Action)
+    action_rates = torch.bincount(actions, minlength=num_actions).float() / max(1, actions.numel())
+    if argmax_actions is None:
+        action_logits = outputs.get("action_logits")
+        if action_logits is not None:
+            argmax_actions = action_logits.argmax(dim=-1)
+        else:
+            argmax_actions = actions
+    argmax_rates = torch.bincount(argmax_actions, minlength=num_actions).float() / max(
+        1, argmax_actions.numel()
+    )
+    target_rates = None
+    if policy_targets is not None and policy_targets.numel() > 0:
+        target_rates = torch.bincount(policy_targets, minlength=num_actions).float() / float(
+            policy_targets.numel()
+        )
     action_probs = outputs.get("action_probs")
     if action_probs is not None:
         entropy = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1)
         action_entropy = entropy.mean().item()
     else:
         action_entropy = 0.0
+    mean_loss_triplet = None
+    if loss_triplet is not None and loss_triplet.numel() > 0:
+        mean_loss_triplet = loss_triplet.float().mean(dim=0).tolist()
     vision_tokens = outputs.get("vision_tokens")
     vision_mean = vision_tokens.float().mean().item() if vision_tokens is not None else 0.0
     token_count_coarse = outputs.get("token_count_coarse")
@@ -310,6 +344,9 @@ def _log_step(
     lr = float(optimizer.param_groups[0].get("lr", 0.0))
     raw_model = getattr(model, "module", model)
     budget_text = _format_budget(getattr(raw_model, "vision_budget", None))
+    lambda_policy_value = float(lambda_policy) if lambda_policy is not None else float("nan")
+    lambda_entropy_value = float(lambda_entropy) if lambda_entropy is not None else float("nan")
+    open_quantile_value = float(open_quantile) if open_quantile is not None else float("nan")
 
     logger.info(
         (
@@ -317,7 +354,10 @@ def _log_step(
             "window_samples=%s window_samples_s=%.2f window_tokens_s=%.2f "
             "avg_total=%.4f avg_task=%.4f avg_cost=%.4f avg_cal=%.4f "
             "avg_gain=%.4f avg_policy=%.4f "
-            "lr=%.6g budget=%s lambda_cost=%.4f action_entropy=%.4f action_ratio=%s "
+            "avg_entropy_loss=%.4f "
+            "lr=%.6g budget=%s lambda_cost=%.4f lambda_policy=%.4f lambda_entropy=%.4f open_q=%.3f "
+            "action_entropy=%.4f action_ratio=%s action_ratio_argmax=%s target_ratio=%s "
+            "loss_triplet_mean=%s "
             "vision_tokens=%.2f token_count_coarse=%.2f token_count_full=%.2f "
             "expected_cost=%.2f flops_proxy=%.2f ece=%.4f "
             "latency_ms=%.2f mem_peak_mb=%.2f tokens_s=%.2f%s"
@@ -339,11 +379,18 @@ def _log_step(
         avg_losses.get("calibration_loss", 0.0),
         avg_losses.get("gain_loss", 0.0),
         avg_losses.get("policy_loss", 0.0),
+        avg_losses.get("entropy_loss", 0.0),
         lr,
         budget_text,
         lambda_cost,
+        lambda_policy_value,
+        lambda_entropy_value,
+        open_quantile_value,
         action_entropy,
         action_rates.tolist(),
+        argmax_rates.tolist(),
+        target_rates.tolist() if target_rates is not None else None,
+        mean_loss_triplet,
         vision_mean,
         coarse_mean,
         full_mean,
@@ -355,6 +402,23 @@ def _log_step(
         tokens_s,
         gain_corr,
     )
+
+
+def _enforce_min_full_ratio_soft(soft_targets: torch.Tensor, min_ratio: float) -> torch.Tensor:
+    if min_ratio <= 0.0:
+        return soft_targets
+    full_idx = int(Action.FULL_VISION)
+    mean_full = soft_targets[:, full_idx].mean()
+    if float(mean_full.item()) >= min_ratio:
+        return soft_targets
+    denom = max(1e-8, float(1.0 - mean_full.item()))
+    blend = max(0.0, min(1.0, float((min_ratio - float(mean_full.item())) / denom)))
+    if blend <= 0.0:
+        return soft_targets
+    full_onehot = torch.zeros_like(soft_targets)
+    full_onehot[:, full_idx] = 1.0
+    mixed = (1.0 - blend) * soft_targets + blend * full_onehot
+    return mixed / mixed.sum(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
 def _evaluate(
@@ -709,13 +773,16 @@ def main() -> None:
     summary_every = int(getattr(cfg.training, "summary_every", 0) or 0)
     period_samples = torch.zeros(1, device=device)
     period_action_counts = torch.zeros(len(Action), device=device)
+    period_argmax_counts = torch.zeros(len(Action), device=device)
     period_cost_sum = torch.zeros(1, device=device)
     period_task_sum = torch.zeros(1, device=device)
     period_policy_sum = torch.zeros(1, device=device)
     period_entropy_sum = torch.zeros(1, device=device)
     period_action_prob_sum = torch.zeros(len(Action), device=device)
     period_target_counts = torch.zeros(len(Action), device=device)
+    period_target_samples = torch.zeros(1, device=device)
     period_loss_triplet_sum = torch.zeros(len(Action), device=device)
+    period_triplet_samples = torch.zeros(1, device=device)
     period_label_tokens = torch.zeros(1, device=device)
     period_label_total = torch.zeros(1, device=device)
 
@@ -751,6 +818,33 @@ def main() -> None:
                 stage_max_steps,
             )
         stage_steps = 0
+        collapse_window_steps = int(cfg.policy.collapse_warn_window_steps)
+        collapse_warn_thresh = float(cfg.policy.collapse_warn_ratio_threshold)
+        collapse_warn_enabled = (
+            stage_baseline is None and rank == 0 and collapse_window_steps > 0
+        )
+        collapse_counters_sampled = [0] * len(Action)
+        collapse_counters_argmax = [0] * len(Action)
+        collapse_counters_target = [0] * len(Action)
+
+        def _maybe_warn_collapse(kind: str, ratios: list[float], counters: list[int]) -> None:
+            if not collapse_warn_enabled:
+                return
+            for i, ratio in enumerate(ratios):
+                if ratio < collapse_warn_thresh:
+                    counters[i] += 1
+                    if counters[i] == collapse_window_steps:
+                        logger.warning(
+                            "policy-collapse-warning window=%d kind=%s threshold=%.3f action=%s ratio=%.4f",
+                            collapse_window_steps,
+                            kind,
+                            collapse_warn_thresh,
+                            Action(i).name,
+                            ratio,
+                        )
+                else:
+                    counters[i] = 0
+
         for local_epoch in range(stage_epochs):
             epoch = epoch_idx + local_epoch
             if train_sampler is not None:
@@ -800,18 +894,60 @@ def main() -> None:
                                 actions=actions,
                                 labels=batch.get("labels"),
                             )
-                        policy_targets = None
+                        policy_ce_start = (
+                            cfg.policy.policy_ce_weight_start
+                            if cfg.policy.policy_ce_weight_start is not None
+                            else cfg.policy.policy_ce_weight
+                        )
+                        policy_ce_end = (
+                            cfg.policy.policy_ce_weight_end
+                            if cfg.policy.policy_ce_weight_end is not None
+                            else cfg.policy.policy_ce_weight
+                        )
+                        lambda_policy_step = _schedule_value(
+                            policy_ce_start,
+                            policy_ce_end,
+                            int(cfg.policy.policy_ce_weight_warmup_steps),
+                            int(stage_steps),
+                        )
+                        entropy_start = (
+                            cfg.policy.entropy_weight_start
+                            if cfg.policy.entropy_weight_start is not None
+                            else cfg.policy.entropy_weight
+                        )
+                        entropy_end = (
+                            cfg.policy.entropy_weight_end
+                            if cfg.policy.entropy_weight_end is not None
+                            else cfg.policy.entropy_weight
+                        )
+                        lambda_entropy_step = _schedule_value(
+                            entropy_start,
+                            entropy_end,
+                            int(cfg.policy.entropy_weight_warmup_steps),
+                            int(stage_steps),
+                        )
+                        open_q_start = (
+                            cfg.policy.policy_open_quantile_start
+                            if cfg.policy.policy_open_quantile_start is not None
+                            else cfg.policy.policy_open_quantile
+                        )
+                        open_q_end = (
+                            cfg.policy.policy_open_quantile_end
+                            if cfg.policy.policy_open_quantile_end is not None
+                            else cfg.policy.policy_open_quantile
+                        )
+                        open_quantile_step = _schedule_value(
+                            float(open_q_start),
+                            float(open_q_end),
+                            int(cfg.policy.policy_open_quantile_warmup_steps),
+                            int(stage_steps),
+                        )
+                        open_quantile_step = float(min(1.0, max(0.0, open_quantile_step)))
+                        policy_targets_hard = None
+                        policy_targets_soft = None
                         if actions is None and cfg.policy.policy_target_mode != "none":
                             loss_triplet = outputs.get("loss_triplet")
                             if loss_triplet is not None:
-                                if cfg.policy.policy_delta_warmup_steps > 0:
-                                    progress = min(
-                                        1.0,
-                                        (stage_steps + 1)
-                                        / float(cfg.policy.policy_delta_warmup_steps),
-                                    )
-                                else:
-                                    progress = 1.0
                                 delta_no_start = (
                                     cfg.policy.policy_delta_no_start
                                     if cfg.policy.policy_delta_no_start is not None
@@ -832,41 +968,43 @@ def main() -> None:
                                     if cfg.policy.policy_delta_coarse_end is not None
                                     else cfg.policy.policy_delta_end
                                 )
-                                delta_no = delta_no_start + progress * (delta_no_end - delta_no_start)
-                                delta_coarse = delta_coarse_start + progress * (
-                                    delta_coarse_end - delta_coarse_start
+                                delta_no_warmup = int(
+                                    cfg.policy.policy_delta_no_warmup_steps
+                                    if cfg.policy.policy_delta_no_warmup_steps is not None
+                                    else cfg.policy.policy_delta_warmup_steps
+                                )
+                                delta_coarse_warmup = int(
+                                    cfg.policy.policy_delta_coarse_warmup_steps
+                                    if cfg.policy.policy_delta_coarse_warmup_steps is not None
+                                    else cfg.policy.policy_delta_warmup_steps
+                                )
+                                delta_no = _schedule_value(
+                                    delta_no_start,
+                                    delta_no_end,
+                                    delta_no_warmup,
+                                    int(stage_steps),
+                                )
+                                delta_coarse = _schedule_value(
+                                    delta_coarse_start,
+                                    delta_coarse_end,
+                                    delta_coarse_warmup,
+                                    int(stage_steps),
                                 )
                                 open_mask = None
                                 has_choices = batch.get("has_choices")
                                 if cfg.policy.policy_open_enable and has_choices is not None:
                                     open_mask = ~has_choices.bool()
-                                no_bias = 0.0
-                                if cfg.policy.policy_no_bias_warmup_steps > 0:
-                                    bias_progress = min(
-                                        1.0,
-                                        (stage_steps + 1)
-                                        / float(cfg.policy.policy_no_bias_warmup_steps),
-                                    )
-                                else:
-                                    bias_progress = 1.0
-                                no_bias = float(cfg.policy.policy_no_bias_start) + bias_progress * (
-                                    float(cfg.policy.policy_no_bias_end)
-                                    - float(cfg.policy.policy_no_bias_start)
+                                no_bias = _schedule_value(
+                                    float(cfg.policy.policy_no_bias_start),
+                                    float(cfg.policy.policy_no_bias_end),
+                                    int(cfg.policy.policy_no_bias_warmup_steps),
+                                    int(stage_steps),
                                 )
-                                open_visual_bias = 0.0
-                                if cfg.policy.policy_open_visual_bias_warmup_steps > 0:
-                                    open_bias_progress = min(
-                                        1.0,
-                                        (stage_steps + 1)
-                                        / float(cfg.policy.policy_open_visual_bias_warmup_steps),
-                                    )
-                                else:
-                                    open_bias_progress = 1.0
-                                open_visual_bias = float(
-                                    cfg.policy.policy_open_visual_bias_start
-                                ) + open_bias_progress * (
-                                    float(cfg.policy.policy_open_visual_bias_end)
-                                    - float(cfg.policy.policy_open_visual_bias_start)
+                                open_visual_bias = _schedule_value(
+                                    float(cfg.policy.policy_open_visual_bias_start),
+                                    float(cfg.policy.policy_open_visual_bias_end),
+                                    int(cfg.policy.policy_open_visual_bias_warmup_steps),
+                                    int(stage_steps),
                                 )
                                 if no_bias > 0 or (
                                     open_visual_bias > 0 and open_mask is not None and open_mask.any()
@@ -890,13 +1028,14 @@ def main() -> None:
                                         - open_visual_bias
                                     )
                                 if cfg.policy.policy_target_mode == "loss_margin":
-                                    policy_targets = compute_policy_targets(
+                                    policy_targets_hard = compute_policy_targets(
                                         loss_triplet, (delta_coarse, delta_no)
                                     )
                                 else:
                                     raise ValueError(
                                         f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
                                     )
+                                open_targets = None
                                 if cfg.policy.policy_open_enable and open_mask is not None and open_mask.any():
                                     loss_no = loss_triplet[:, Action.NO_VISION]
                                     loss_coarse = loss_triplet[:, Action.COARSE_VISION]
@@ -945,7 +1084,7 @@ def main() -> None:
                                             threshold = float(
                                                 torch.quantile(
                                                     diff_open.detach(),
-                                                    float(cfg.policy.policy_open_quantile),
+                                                    open_quantile_step,
                                                 ).item()
                                             )
                                         margin = float(cfg.policy.policy_open_margin)
@@ -967,8 +1106,8 @@ def main() -> None:
                                                 dtype=torch.long,
                                             ),
                                         )
-                                    policy_targets = policy_targets.clone()
-                                    policy_targets[open_mask] = open_targets[open_mask]
+                                    policy_targets_hard = policy_targets_hard.clone()
+                                    policy_targets_hard[open_mask] = open_targets[open_mask]
                                 min_full_ratio = float(cfg.policy.policy_min_full_ratio or 0.0)
                                 if min_full_ratio > 0:
                                     if cfg.policy.policy_min_full_warmup_steps > 0:
@@ -977,7 +1116,7 @@ def main() -> None:
                                             1.0, (stage_steps + 1) / warmup
                                         )
                                     if min_full_ratio > 0:
-                                        full_mask = policy_targets == Action.FULL_VISION
+                                        full_mask = policy_targets_hard == Action.FULL_VISION
                                         full_count = int(full_mask.sum().item())
                                         needed = int(
                                             max(
@@ -986,7 +1125,7 @@ def main() -> None:
                                             )
                                         )
                                         if needed > 0:
-                                            candidates = (policy_targets != Action.FULL_VISION).nonzero(
+                                            candidates = (policy_targets_hard != Action.FULL_VISION).nonzero(
                                                 as_tuple=False
                                             )
                                             if candidates.numel() > 0:
@@ -994,17 +1133,37 @@ def main() -> None:
                                                     candidates.shape[0], device=candidates.device
                                                 )
                                                 pick = candidates[perm[:needed]].squeeze(-1)
-                                                policy_targets[pick] = Action.FULL_VISION
+                                                policy_targets_hard[pick] = Action.FULL_VISION
+                                if cfg.policy.enable_soft_targets and policy_targets_hard is not None:
+                                    temp = float(cfg.policy.soft_target_temperature)
+                                    policy_targets_soft = torch.softmax(
+                                        -loss_triplet / temp, dim=-1
+                                    )
+                                    if (
+                                        open_targets is not None
+                                        and open_mask is not None
+                                        and open_mask.any()
+                                    ):
+                                        open_onehot = F.one_hot(
+                                            open_targets[open_mask], num_classes=len(Action)
+                                        ).float()
+                                        policy_targets_soft = policy_targets_soft.clone()
+                                        policy_targets_soft[open_mask] = open_onehot
+                                    if min_full_ratio > 0:
+                                        policy_targets_soft = _enforce_min_full_ratio_soft(
+                                            policy_targets_soft, float(min_full_ratio)
+                                        )
                         losses = compute_total_loss(
                             outputs["logits"],
                             outputs.get("labels"),
                             outputs["expected_cost"],
                             lambda_cost,
                             action_probs=outputs.get("action_probs"),
-                            lambda_entropy=cfg.policy.entropy_weight,
+                            lambda_entropy=lambda_entropy_step,
                             action_logits=outputs.get("action_logits"),
-                            action_targets=policy_targets,
-                            lambda_policy=cfg.policy.policy_ce_weight,
+                            action_targets=policy_targets_hard,
+                            action_targets_soft=policy_targets_soft,
+                            lambda_policy=lambda_policy_step,
                             calibration_value=None,
                             lambda_cal=cfg.policy.calibration_lambda,
                             gain_pred=outputs.get("gain_pred"),
@@ -1055,6 +1214,35 @@ def main() -> None:
                         actions=outputs["actions"],
                     )
 
+                action_logits = outputs.get("action_logits")
+                if action_logits is not None and stage_baseline is None:
+                    argmax_actions = action_logits.argmax(dim=-1)
+                else:
+                    argmax_actions = outputs["actions"]
+                loss_triplet = outputs.get("loss_triplet")
+
+                if collapse_warn_enabled:
+                    sampled_counts = torch.bincount(
+                        outputs["actions"].detach(), minlength=len(Action)
+                    ).float()
+                    sampled_ratios = (sampled_counts / max(1, batch_size)).tolist()
+                    _maybe_warn_collapse("sampled", sampled_ratios, collapse_counters_sampled)
+
+                    argmax_counts = torch.bincount(
+                        argmax_actions.detach(), minlength=len(Action)
+                    ).float()
+                    argmax_ratios = (argmax_counts / max(1, batch_size)).tolist()
+                    _maybe_warn_collapse("argmax", argmax_ratios, collapse_counters_argmax)
+
+                    if policy_targets_hard is not None:
+                        target_counts = torch.bincount(
+                            policy_targets_hard.detach(), minlength=len(Action)
+                        ).float()
+                        target_ratios = (target_counts / max(1, batch_size)).tolist()
+                        _maybe_warn_collapse(
+                            "target", target_ratios, collapse_counters_target
+                        )
+
                 window_samples += batch_size
                 window_tokens += int(batch["input_ids"].numel())
                 window_batches += 1
@@ -1077,6 +1265,9 @@ def main() -> None:
                     period_action_counts += torch.bincount(
                         outputs["actions"].detach(), minlength=len(Action)
                     ).float()
+                    period_argmax_counts += torch.bincount(
+                        argmax_actions.detach(), minlength=len(Action)
+                    ).float()
                     expected_cost = outputs.get("expected_cost")
                     if expected_cost is not None:
                         period_cost_sum += expected_cost.detach().sum()
@@ -1089,13 +1280,14 @@ def main() -> None:
                         ent = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1)
                         period_entropy_sum += ent.detach().sum()
                         period_action_prob_sum += action_probs.detach().sum(dim=0)
-                    if policy_targets is not None:
+                    if policy_targets_hard is not None:
                         period_target_counts += torch.bincount(
-                            policy_targets.detach(), minlength=len(Action)
+                            policy_targets_hard.detach(), minlength=len(Action)
                         ).float()
-                    loss_triplet = outputs.get("loss_triplet")
+                        period_target_samples += float(policy_targets_hard.numel())
                     if loss_triplet is not None:
                         period_loss_triplet_sum += loss_triplet.detach().sum(dim=0)
+                        period_triplet_samples += float(loss_triplet.shape[0])
                     labels = batch.get("labels")
                     if labels is not None:
                         period_label_tokens += labels.ne(-100).sum()
@@ -1147,6 +1339,12 @@ def main() -> None:
                         lambda_cost,
                         train_profiler,
                         model,
+                        argmax_actions=argmax_actions,
+                        policy_targets=policy_targets_hard,
+                        loss_triplet=loss_triplet,
+                        lambda_policy=lambda_policy_step,
+                        lambda_entropy=lambda_entropy_step,
+                        open_quantile=open_quantile_step,
                     )
                     window_start = time.time()
                     window_samples = 0
@@ -1197,41 +1395,44 @@ def main() -> None:
                     if distributed:
                         dist.all_reduce(period_samples, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_action_counts, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_argmax_counts, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_cost_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_task_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_policy_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_entropy_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_action_prob_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_target_counts, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_target_samples, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_loss_triplet_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_triplet_samples, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_label_tokens, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_label_total, op=dist.ReduceOp.SUM)
                     if rank == 0:
                         samples = max(1.0, float(period_samples.item()))
                         action_ratio = (period_action_counts / samples).tolist()
+                        argmax_ratio = (period_argmax_counts / samples).tolist()
                         avg_cost = float(period_cost_sum.item()) / samples
                         avg_task = float(period_task_sum.item()) / samples
                         avg_policy = float(period_policy_sum.item()) / samples
                         avg_entropy = float(period_entropy_sum.item()) / samples
                         mean_probs = (period_action_prob_sum / samples).tolist()
                         target_ratio = None
-                        if period_target_counts.sum().item() > 0:
-                            target_ratio = (period_target_counts / samples).tolist()
+                        target_samples = float(period_target_samples.item())
+                        if target_samples > 0:
+                            target_ratio = (
+                                period_target_counts / max(1.0, target_samples)
+                            ).tolist()
                         mean_loss_triplet = None
-                        if period_loss_triplet_sum.sum().item() > 0:
-                            mean_loss_triplet = (period_loss_triplet_sum / samples).tolist()
+                        triplet_samples = float(period_triplet_samples.item())
+                        if triplet_samples > 0:
+                            mean_loss_triplet = (
+                                period_loss_triplet_sum / max(1.0, triplet_samples)
+                            ).tolist()
                         label_valid_ratio = 0.0
                         if period_label_total.item() > 0:
                             label_valid_ratio = float(period_label_tokens.item()) / float(
                                 period_label_total.item()
                             )
-                        def _schedule(start: float, end: float, warmup_steps: int, step: int) -> float:
-                            if warmup_steps > 0:
-                                prog = min(1.0, (step + 1) / float(warmup_steps))
-                            else:
-                                prog = 1.0
-                            return float(start) + prog * (float(end) - float(start))
-
                         delta_no_start = (
                             cfg.policy.policy_delta_no_start
                             if cfg.policy.policy_delta_no_start is not None
@@ -1252,35 +1453,124 @@ def main() -> None:
                             if cfg.policy.policy_delta_coarse_end is not None
                             else cfg.policy.policy_delta_end
                         )
-                        delta_no_step = _schedule(
+                        delta_no_warmup = int(
+                            cfg.policy.policy_delta_no_warmup_steps
+                            if cfg.policy.policy_delta_no_warmup_steps is not None
+                            else cfg.policy.policy_delta_warmup_steps
+                        )
+                        delta_coarse_warmup = int(
+                            cfg.policy.policy_delta_coarse_warmup_steps
+                            if cfg.policy.policy_delta_coarse_warmup_steps is not None
+                            else cfg.policy.policy_delta_warmup_steps
+                        )
+                        delta_no_step = _schedule_value(
                             delta_no_start,
                             delta_no_end,
-                            int(cfg.policy.policy_delta_warmup_steps),
+                            delta_no_warmup,
                             int(stage_steps),
                         )
-                        delta_coarse_step = _schedule(
+                        delta_coarse_step = _schedule_value(
                             delta_coarse_start,
                             delta_coarse_end,
-                            int(cfg.policy.policy_delta_warmup_steps),
+                            delta_coarse_warmup,
                             int(stage_steps),
                         )
-                        no_bias_step = _schedule(
+                        no_bias_step = _schedule_value(
                             float(cfg.policy.policy_no_bias_start),
                             float(cfg.policy.policy_no_bias_end),
                             int(cfg.policy.policy_no_bias_warmup_steps),
                             int(stage_steps),
                         )
-                        open_bias_step = _schedule(
+                        open_bias_step = _schedule_value(
                             float(cfg.policy.policy_open_visual_bias_start),
                             float(cfg.policy.policy_open_visual_bias_end),
                             int(cfg.policy.policy_open_visual_bias_warmup_steps),
                             int(stage_steps),
                         )
+                        open_q_start = (
+                            cfg.policy.policy_open_quantile_start
+                            if cfg.policy.policy_open_quantile_start is not None
+                            else cfg.policy.policy_open_quantile
+                        )
+                        open_q_end = (
+                            cfg.policy.policy_open_quantile_end
+                            if cfg.policy.policy_open_quantile_end is not None
+                            else cfg.policy.policy_open_quantile
+                        )
+                        open_quantile_step = _schedule_value(
+                            float(open_q_start),
+                            float(open_q_end),
+                            int(cfg.policy.policy_open_quantile_warmup_steps),
+                            int(stage_steps),
+                        )
+                        open_quantile_step = float(min(1.0, max(0.0, open_quantile_step)))
+                        policy_ce_start = (
+                            cfg.policy.policy_ce_weight_start
+                            if cfg.policy.policy_ce_weight_start is not None
+                            else cfg.policy.policy_ce_weight
+                        )
+                        policy_ce_end = (
+                            cfg.policy.policy_ce_weight_end
+                            if cfg.policy.policy_ce_weight_end is not None
+                            else cfg.policy.policy_ce_weight
+                        )
+                        lambda_policy_step = _schedule_value(
+                            float(policy_ce_start),
+                            float(policy_ce_end),
+                            int(cfg.policy.policy_ce_weight_warmup_steps),
+                            int(stage_steps),
+                        )
+                        entropy_start = (
+                            cfg.policy.entropy_weight_start
+                            if cfg.policy.entropy_weight_start is not None
+                            else cfg.policy.entropy_weight
+                        )
+                        entropy_end = (
+                            cfg.policy.entropy_weight_end
+                            if cfg.policy.entropy_weight_end is not None
+                            else cfg.policy.entropy_weight
+                        )
+                        lambda_entropy_step = _schedule_value(
+                            float(entropy_start),
+                            float(entropy_end),
+                            int(cfg.policy.entropy_weight_warmup_steps),
+                            int(stage_steps),
+                        )
+                        collapse_window = int(cfg.policy.collapse_warn_window_steps or 0)
+                        collapse_thresh = float(cfg.policy.collapse_warn_ratio_threshold)
+                        collapse_ready = (
+                            stage_baseline is None
+                            and collapse_window > 0
+                            and summary_every >= collapse_window
+                        )
+                        if collapse_ready:
+                            def _warn(kind: str, ratios: list[float] | None) -> None:
+                                if ratios is None:
+                                    return
+                                low = [
+                                    Action(i).name
+                                    for i, r in enumerate(ratios)
+                                    if r < collapse_thresh
+                                ]
+                                if low:
+                                    logger.warning(
+                                        "policy-collapse-warning window=%d kind=%s threshold=%.3f low_actions=%s ratios=%s",
+                                        summary_every,
+                                        kind,
+                                        collapse_thresh,
+                                        low,
+                                        ratios,
+                                    )
+
+                            _warn("sampled", action_ratio)
+                            _warn("argmax", argmax_ratio)
+                            _warn("target", target_ratio)
                         logger.info(
-                            "SUMMARY@%d samples=%d action_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f delta_no=%.4g delta_coarse=%.4g no_bias=%.4g open_bias=%.4g avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
+                            "SUMMARY@%d samples=%d action_ratio=%s argmax_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f delta_no=%.4g delta_coarse=%.4g no_bias=%.4g open_bias=%.4g open_q=%.3f lambda_policy=%.4f lambda_entropy=%.4f avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
                             global_step,
                             int(samples),
                             action_ratio,
+                            argmax_ratio,
                             target_ratio,
                             mean_probs,
                             mean_loss_triplet,
@@ -1289,6 +1579,9 @@ def main() -> None:
                             delta_coarse_step,
                             no_bias_step,
                             open_bias_step,
+                            open_quantile_step,
+                            lambda_policy_step,
+                            lambda_entropy_step,
                             avg_cost,
                             avg_task,
                             avg_policy,
@@ -1298,13 +1591,16 @@ def main() -> None:
                         )
                     period_samples.zero_()
                     period_action_counts.zero_()
+                    period_argmax_counts.zero_()
                     period_cost_sum.zero_()
                     period_task_sum.zero_()
                     period_policy_sum.zero_()
                     period_entropy_sum.zero_()
                     period_action_prob_sum.zero_()
                     period_target_counts.zero_()
+                    period_target_samples.zero_()
                     period_loss_triplet_sum.zero_()
+                    period_triplet_samples.zero_()
                     period_label_tokens.zero_()
                     period_label_total.zero_()
 

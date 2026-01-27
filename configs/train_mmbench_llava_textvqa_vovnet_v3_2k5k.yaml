@@ -34,24 +34,31 @@ policy:
   gain_loss_weight: 0.0
   gain_margin: 0.2
   policy_target_mode: "loss_margin"
-  policy_ce_weight: 5.0
+  policy_ce_weight: 1.0
+  policy_ce_weight_start: 1.0
+  policy_ce_weight_end: 3.0
+  policy_ce_weight_warmup_steps: 20000
   policy_delta_start: 0.0
   policy_delta_end: 0.10
   policy_delta_warmup_steps: 1000
-  policy_delta_no_start: 0.0
-  policy_delta_no_end: 0.0
+  policy_delta_no_start: 0.02
+  policy_delta_no_end: 0.05
+  policy_delta_no_warmup_steps: 1000
   policy_delta_coarse_start: 0.03
   policy_delta_coarse_end: 0.05
   policy_min_full_ratio: 0.05
   policy_min_full_warmup_steps: 6000
-  policy_no_bias_start: 0.02
+  policy_no_bias_start: 0.0
   policy_no_bias_end: 0.02
-  policy_no_bias_warmup_steps: 0
+  policy_no_bias_warmup_steps: 5000
   policy_open_enable: true
-  policy_open_quantile: 0.0
+  policy_open_quantile: 0.5
+  policy_open_quantile_start: 0.0
+  policy_open_quantile_end: 0.5
+  policy_open_quantile_warmup_steps: 5000
   policy_open_margin: 0.0
   policy_open_use_best_vis: true
-  policy_open_force_visual_warmup_steps: 12000
+  policy_open_force_visual_warmup_steps: 3000
   policy_open_force_visual_action: "best_vis"
   policy_open_visual_bias_start: 0.05
   policy_open_visual_bias_end: 0.02
@@ -61,7 +68,10 @@ policy:
   cost_warmup_steps: 3000
   gumbel_tau: 1.5
   use_straight_through: true
-  entropy_weight: 0.02
+  entropy_weight: 0.05
+  entropy_weight_start: 0.05
+  entropy_weight_end: 0.02
+  entropy_weight_warmup_steps: 20000
   explore_prob: 0.2
 
 vision_budget:

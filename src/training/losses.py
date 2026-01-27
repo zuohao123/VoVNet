@@ -63,12 +63,23 @@ def compute_policy_targets(
 
 
 def compute_policy_loss(
-    action_logits: Tensor | None, action_targets: Tensor | None
+    action_logits: Tensor | None,
+    action_targets: Tensor | None,
+    action_targets_soft: Tensor | None = None,
 ) -> Tensor:
-    """Compute policy cross-entropy loss over action logits."""
-    if action_logits is None or action_targets is None:
-        device = action_logits.device if action_logits is not None else torch.device("cpu")
-        return torch.tensor(0.0, device=device)
+    """Compute policy loss over action logits.
+
+    If ``action_targets_soft`` is provided, use KL divergence against the
+    soft distribution; otherwise fall back to hard cross-entropy targets.
+    """
+    if action_logits is None:
+        return torch.tensor(0.0, device=torch.device("cpu"))
+    if action_targets_soft is not None:
+        log_probs = F.log_softmax(action_logits, dim=-1)
+        targets = action_targets_soft.detach()
+        return F.kl_div(log_probs, targets, reduction="batchmean")
+    if action_targets is None:
+        return torch.tensor(0.0, device=action_logits.device)
     return F.cross_entropy(action_logits, action_targets)
 
 
@@ -114,6 +125,7 @@ def compute_total_loss(
     lambda_entropy: float = 0.0,
     action_logits: Tensor | None = None,
     action_targets: Tensor | None = None,
+    action_targets_soft: Tensor | None = None,
     lambda_policy: float = 0.0,
     calibration_value: Tensor | None = None,
     lambda_cal: float = 0.0,
@@ -138,7 +150,11 @@ def compute_total_loss(
         margin=gain_margin,
     )
     entropy_loss = compute_entropy_loss(action_probs, lambda_entropy)
-    policy_loss = compute_policy_loss(action_logits, action_targets)
+    policy_loss = compute_policy_loss(
+        action_logits=action_logits,
+        action_targets=action_targets,
+        action_targets_soft=action_targets_soft,
+    )
     total_loss = (
         task_loss
         + cost_loss

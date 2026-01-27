@@ -70,13 +70,18 @@ class PolicyConfig:
     gain_margin: float = 0.0
     policy_target_mode: str = "none"
     policy_ce_weight: float = 0.0
+    policy_ce_weight_start: float | None = None
+    policy_ce_weight_end: float | None = None
+    policy_ce_weight_warmup_steps: int = 0
     policy_delta_start: float = 0.0
     policy_delta_end: float = 0.0
     policy_delta_warmup_steps: int = 0
     policy_delta_no_start: float | None = None
     policy_delta_no_end: float | None = None
+    policy_delta_no_warmup_steps: int | None = None
     policy_delta_coarse_start: float | None = None
     policy_delta_coarse_end: float | None = None
+    policy_delta_coarse_warmup_steps: int | None = None
     policy_min_full_ratio: float = 0.0
     policy_min_full_warmup_steps: int = 0
     policy_no_bias_start: float = 0.0
@@ -84,6 +89,9 @@ class PolicyConfig:
     policy_no_bias_warmup_steps: int = 0
     policy_open_enable: bool = False
     policy_open_quantile: float = 0.2
+    policy_open_quantile_start: float | None = None
+    policy_open_quantile_end: float | None = None
+    policy_open_quantile_warmup_steps: int = 0
     policy_open_margin: float = 0.02
     policy_open_use_best_vis: bool = True
     policy_open_force_visual_warmup_steps: int = 0
@@ -91,6 +99,13 @@ class PolicyConfig:
     policy_open_visual_bias_start: float = 0.0
     policy_open_visual_bias_end: float = 0.0
     policy_open_visual_bias_warmup_steps: int = 0
+    entropy_weight_start: float | None = None
+    entropy_weight_end: float | None = None
+    entropy_weight_warmup_steps: int = 0
+    enable_soft_targets: bool = False
+    soft_target_temperature: float = 1.0
+    collapse_warn_ratio_threshold: float = 0.01
+    collapse_warn_window_steps: int = 1000
     explore_prob: float = 0.0
 
 
@@ -237,12 +252,23 @@ class Config:
             raise ValueError("policy.policy_target_mode must be none or loss_margin")
         if self.policy.policy_ce_weight < 0:
             raise ValueError("policy.policy_ce_weight must be >= 0")
+        if self.policy.policy_ce_weight_start is not None and self.policy.policy_ce_weight_start < 0:
+            raise ValueError("policy.policy_ce_weight_start must be >= 0")
+        if self.policy.policy_ce_weight_end is not None and self.policy.policy_ce_weight_end < 0:
+            raise ValueError("policy.policy_ce_weight_end must be >= 0")
+        if self.policy.policy_ce_weight_warmup_steps < 0:
+            raise ValueError("policy.policy_ce_weight_warmup_steps must be >= 0")
         if self.policy.policy_delta_warmup_steps < 0:
             raise ValueError("policy.policy_delta_warmup_steps must be >= 0")
         if self.policy.policy_delta_no_start is not None and self.policy.policy_delta_no_start < 0:
             raise ValueError("policy.policy_delta_no_start must be >= 0")
         if self.policy.policy_delta_no_end is not None and self.policy.policy_delta_no_end < 0:
             raise ValueError("policy.policy_delta_no_end must be >= 0")
+        if (
+            self.policy.policy_delta_no_warmup_steps is not None
+            and self.policy.policy_delta_no_warmup_steps < 0
+        ):
+            raise ValueError("policy.policy_delta_no_warmup_steps must be >= 0")
         if (
             self.policy.policy_delta_coarse_start is not None
             and self.policy.policy_delta_coarse_start < 0
@@ -253,6 +279,11 @@ class Config:
             and self.policy.policy_delta_coarse_end < 0
         ):
             raise ValueError("policy.policy_delta_coarse_end must be >= 0")
+        if (
+            self.policy.policy_delta_coarse_warmup_steps is not None
+            and self.policy.policy_delta_coarse_warmup_steps < 0
+        ):
+            raise ValueError("policy.policy_delta_coarse_warmup_steps must be >= 0")
         if not (0.0 <= self.policy.policy_min_full_ratio <= 1.0):
             raise ValueError("policy.policy_min_full_ratio must be in [0, 1]")
         if self.policy.policy_min_full_warmup_steps < 0:
@@ -265,6 +296,18 @@ class Config:
             raise ValueError("policy.policy_no_bias_warmup_steps must be >= 0")
         if not (0.0 <= self.policy.policy_open_quantile <= 1.0):
             raise ValueError("policy.policy_open_quantile must be in [0, 1]")
+        if (
+            self.policy.policy_open_quantile_start is not None
+            and not (0.0 <= self.policy.policy_open_quantile_start <= 1.0)
+        ):
+            raise ValueError("policy.policy_open_quantile_start must be in [0, 1]")
+        if (
+            self.policy.policy_open_quantile_end is not None
+            and not (0.0 <= self.policy.policy_open_quantile_end <= 1.0)
+        ):
+            raise ValueError("policy.policy_open_quantile_end must be in [0, 1]")
+        if self.policy.policy_open_quantile_warmup_steps < 0:
+            raise ValueError("policy.policy_open_quantile_warmup_steps must be >= 0")
         if self.policy.policy_open_margin < 0:
             raise ValueError("policy.policy_open_margin must be >= 0")
         if self.policy.policy_open_force_visual_warmup_steps < 0:
@@ -279,6 +322,18 @@ class Config:
             raise ValueError("policy.policy_open_visual_bias_end must be >= 0")
         if self.policy.policy_open_visual_bias_warmup_steps < 0:
             raise ValueError("policy.policy_open_visual_bias_warmup_steps must be >= 0")
+        if self.policy.entropy_weight_start is not None and self.policy.entropy_weight_start < 0:
+            raise ValueError("policy.entropy_weight_start must be >= 0")
+        if self.policy.entropy_weight_end is not None and self.policy.entropy_weight_end < 0:
+            raise ValueError("policy.entropy_weight_end must be >= 0")
+        if self.policy.entropy_weight_warmup_steps < 0:
+            raise ValueError("policy.entropy_weight_warmup_steps must be >= 0")
+        if self.policy.enable_soft_targets and self.policy.soft_target_temperature <= 0:
+            raise ValueError("policy.soft_target_temperature must be > 0 when soft targets are enabled")
+        if not (0.0 <= self.policy.collapse_warn_ratio_threshold <= 1.0):
+            raise ValueError("policy.collapse_warn_ratio_threshold must be in [0, 1]")
+        if self.policy.collapse_warn_window_steps < 0:
+            raise ValueError("policy.collapse_warn_window_steps must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name
@@ -493,13 +548,127 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.calibration_lambda = _to_float(
         cfg.policy.calibration_lambda, "policy.calibration_lambda"
     )
+    cfg.policy.policy_ce_weight = _to_float(
+        cfg.policy.policy_ce_weight, "policy.policy_ce_weight"
+    )
+    cfg.policy.policy_ce_weight_start = _to_float(
+        cfg.policy.policy_ce_weight_start, "policy.policy_ce_weight_start", allow_none=True
+    )
+    cfg.policy.policy_ce_weight_end = _to_float(
+        cfg.policy.policy_ce_weight_end, "policy.policy_ce_weight_end", allow_none=True
+    )
+    cfg.policy.policy_ce_weight_warmup_steps = _to_int(
+        cfg.policy.policy_ce_weight_warmup_steps, "policy.policy_ce_weight_warmup_steps"
+    )
     cfg.policy.entropy_weight = _to_float(
         cfg.policy.entropy_weight, "policy.entropy_weight"
+    )
+    cfg.policy.entropy_weight_start = _to_float(
+        cfg.policy.entropy_weight_start, "policy.entropy_weight_start", allow_none=True
+    )
+    cfg.policy.entropy_weight_end = _to_float(
+        cfg.policy.entropy_weight_end, "policy.entropy_weight_end", allow_none=True
+    )
+    cfg.policy.entropy_weight_warmup_steps = _to_int(
+        cfg.policy.entropy_weight_warmup_steps, "policy.entropy_weight_warmup_steps"
     )
     cfg.policy.gain_loss_weight = _to_float(
         cfg.policy.gain_loss_weight, "policy.gain_loss_weight"
     )
     cfg.policy.gain_margin = _to_float(cfg.policy.gain_margin, "policy.gain_margin")
+    cfg.policy.policy_delta_start = _to_float(
+        cfg.policy.policy_delta_start, "policy.policy_delta_start"
+    )
+    cfg.policy.policy_delta_end = _to_float(
+        cfg.policy.policy_delta_end, "policy.policy_delta_end"
+    )
+    cfg.policy.policy_delta_warmup_steps = _to_int(
+        cfg.policy.policy_delta_warmup_steps, "policy.policy_delta_warmup_steps"
+    )
+    cfg.policy.policy_delta_no_start = _to_float(
+        cfg.policy.policy_delta_no_start, "policy.policy_delta_no_start", allow_none=True
+    )
+    cfg.policy.policy_delta_no_end = _to_float(
+        cfg.policy.policy_delta_no_end, "policy.policy_delta_no_end", allow_none=True
+    )
+    cfg.policy.policy_delta_no_warmup_steps = _to_int(
+        cfg.policy.policy_delta_no_warmup_steps,
+        "policy.policy_delta_no_warmup_steps",
+        allow_none=True,
+    )
+    cfg.policy.policy_delta_coarse_start = _to_float(
+        cfg.policy.policy_delta_coarse_start,
+        "policy.policy_delta_coarse_start",
+        allow_none=True,
+    )
+    cfg.policy.policy_delta_coarse_end = _to_float(
+        cfg.policy.policy_delta_coarse_end,
+        "policy.policy_delta_coarse_end",
+        allow_none=True,
+    )
+    cfg.policy.policy_delta_coarse_warmup_steps = _to_int(
+        cfg.policy.policy_delta_coarse_warmup_steps,
+        "policy.policy_delta_coarse_warmup_steps",
+        allow_none=True,
+    )
+    cfg.policy.policy_min_full_ratio = _to_float(
+        cfg.policy.policy_min_full_ratio, "policy.policy_min_full_ratio"
+    )
+    cfg.policy.policy_min_full_warmup_steps = _to_int(
+        cfg.policy.policy_min_full_warmup_steps, "policy.policy_min_full_warmup_steps"
+    )
+    cfg.policy.policy_no_bias_start = _to_float(
+        cfg.policy.policy_no_bias_start, "policy.policy_no_bias_start"
+    )
+    cfg.policy.policy_no_bias_end = _to_float(
+        cfg.policy.policy_no_bias_end, "policy.policy_no_bias_end"
+    )
+    cfg.policy.policy_no_bias_warmup_steps = _to_int(
+        cfg.policy.policy_no_bias_warmup_steps, "policy.policy_no_bias_warmup_steps"
+    )
+    cfg.policy.policy_open_quantile = _to_float(
+        cfg.policy.policy_open_quantile, "policy.policy_open_quantile"
+    )
+    cfg.policy.policy_open_quantile_start = _to_float(
+        cfg.policy.policy_open_quantile_start,
+        "policy.policy_open_quantile_start",
+        allow_none=True,
+    )
+    cfg.policy.policy_open_quantile_end = _to_float(
+        cfg.policy.policy_open_quantile_end,
+        "policy.policy_open_quantile_end",
+        allow_none=True,
+    )
+    cfg.policy.policy_open_quantile_warmup_steps = _to_int(
+        cfg.policy.policy_open_quantile_warmup_steps,
+        "policy.policy_open_quantile_warmup_steps",
+    )
+    cfg.policy.policy_open_margin = _to_float(
+        cfg.policy.policy_open_margin, "policy.policy_open_margin"
+    )
+    cfg.policy.policy_open_force_visual_warmup_steps = _to_int(
+        cfg.policy.policy_open_force_visual_warmup_steps,
+        "policy.policy_open_force_visual_warmup_steps",
+    )
+    cfg.policy.policy_open_visual_bias_start = _to_float(
+        cfg.policy.policy_open_visual_bias_start, "policy.policy_open_visual_bias_start"
+    )
+    cfg.policy.policy_open_visual_bias_end = _to_float(
+        cfg.policy.policy_open_visual_bias_end, "policy.policy_open_visual_bias_end"
+    )
+    cfg.policy.policy_open_visual_bias_warmup_steps = _to_int(
+        cfg.policy.policy_open_visual_bias_warmup_steps,
+        "policy.policy_open_visual_bias_warmup_steps",
+    )
+    cfg.policy.soft_target_temperature = _to_float(
+        cfg.policy.soft_target_temperature, "policy.soft_target_temperature"
+    )
+    cfg.policy.collapse_warn_ratio_threshold = _to_float(
+        cfg.policy.collapse_warn_ratio_threshold, "policy.collapse_warn_ratio_threshold"
+    )
+    cfg.policy.collapse_warn_window_steps = _to_int(
+        cfg.policy.collapse_warn_window_steps, "policy.collapse_warn_window_steps"
+    )
     cfg.policy.explore_prob = _to_float(
         cfg.policy.explore_prob, "policy.explore_prob"
     )
