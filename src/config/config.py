@@ -86,6 +86,11 @@ class PolicyConfig:
     policy_open_quantile: float = 0.2
     policy_open_margin: float = 0.02
     policy_open_use_best_vis: bool = True
+    policy_open_force_visual_warmup_steps: int = 0
+    policy_open_force_visual_action: str = "best_vis"
+    policy_open_visual_bias_start: float = 0.0
+    policy_open_visual_bias_end: float = 0.0
+    policy_open_visual_bias_warmup_steps: int = 0
     explore_prob: float = 0.0
 
 
@@ -262,6 +267,18 @@ class Config:
             raise ValueError("policy.policy_open_quantile must be in [0, 1]")
         if self.policy.policy_open_margin < 0:
             raise ValueError("policy.policy_open_margin must be >= 0")
+        if self.policy.policy_open_force_visual_warmup_steps < 0:
+            raise ValueError("policy.policy_open_force_visual_warmup_steps must be >= 0")
+        if self.policy.policy_open_force_visual_action not in {"best_vis", "coarse", "full"}:
+            raise ValueError(
+                "policy.policy_open_force_visual_action must be best_vis, coarse, or full"
+            )
+        if self.policy.policy_open_visual_bias_start < 0:
+            raise ValueError("policy.policy_open_visual_bias_start must be >= 0")
+        if self.policy.policy_open_visual_bias_end < 0:
+            raise ValueError("policy.policy_open_visual_bias_end must be >= 0")
+        if self.policy.policy_open_visual_bias_warmup_steps < 0:
+            raise ValueError("policy.policy_open_visual_bias_warmup_steps must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
         baseline = self.policy.baseline_name

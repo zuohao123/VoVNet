@@ -836,6 +836,10 @@ def main() -> None:
                                 delta_coarse = delta_coarse_start + progress * (
                                     delta_coarse_end - delta_coarse_start
                                 )
+                                open_mask = None
+                                has_choices = batch.get("has_choices")
+                                if cfg.policy.policy_open_enable and has_choices is not None:
+                                    open_mask = ~has_choices.bool()
                                 no_bias = 0.0
                                 if cfg.policy.policy_no_bias_warmup_steps > 0:
                                     bias_progress = min(
@@ -849,10 +853,41 @@ def main() -> None:
                                     float(cfg.policy.policy_no_bias_end)
                                     - float(cfg.policy.policy_no_bias_start)
                                 )
-                                if no_bias > 0:
+                                open_visual_bias = 0.0
+                                if cfg.policy.policy_open_visual_bias_warmup_steps > 0:
+                                    open_bias_progress = min(
+                                        1.0,
+                                        (stage_steps + 1)
+                                        / float(cfg.policy.policy_open_visual_bias_warmup_steps),
+                                    )
+                                else:
+                                    open_bias_progress = 1.0
+                                open_visual_bias = float(
+                                    cfg.policy.policy_open_visual_bias_start
+                                ) + open_bias_progress * (
+                                    float(cfg.policy.policy_open_visual_bias_end)
+                                    - float(cfg.policy.policy_open_visual_bias_start)
+                                )
+                                if no_bias > 0 or (
+                                    open_visual_bias > 0 and open_mask is not None and open_mask.any()
+                                ):
                                     loss_triplet = loss_triplet.clone()
+                                if no_bias > 0:
                                     loss_triplet[:, Action.NO_VISION] = (
                                         loss_triplet[:, Action.NO_VISION] + no_bias
+                                    )
+                                if (
+                                    open_visual_bias > 0
+                                    and open_mask is not None
+                                    and open_mask.any()
+                                ):
+                                    loss_triplet[open_mask, Action.COARSE_VISION] = (
+                                        loss_triplet[open_mask, Action.COARSE_VISION]
+                                        - open_visual_bias
+                                    )
+                                    loss_triplet[open_mask, Action.FULL_VISION] = (
+                                        loss_triplet[open_mask, Action.FULL_VISION]
+                                        - open_visual_bias
                                     )
                                 if cfg.policy.policy_target_mode == "loss_margin":
                                     policy_targets = compute_policy_targets(
@@ -862,66 +897,78 @@ def main() -> None:
                                     raise ValueError(
                                         f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
                                     )
-                                if cfg.policy.policy_open_enable:
-                                    has_choices = batch.get("has_choices")
-                                    if has_choices is not None:
-                                        open_mask = ~has_choices.bool()
-                                        if open_mask.any():
-                                            loss_no = loss_triplet[:, Action.NO_VISION]
-                                            loss_coarse = loss_triplet[:, Action.COARSE_VISION]
-                                            loss_full = loss_triplet[:, Action.FULL_VISION]
-                                            if cfg.policy.policy_open_use_best_vis:
-                                                best_vis = torch.where(
-                                                    loss_coarse <= loss_full,
-                                                    torch.full(
-                                                        loss_coarse.shape,
-                                                        int(Action.COARSE_VISION),
-                                                        device=loss_coarse.device,
-                                                        dtype=torch.long,
-                                                    ),
-                                                    torch.full(
-                                                        loss_full.shape,
-                                                        int(Action.FULL_VISION),
-                                                        device=loss_full.device,
-                                                        dtype=torch.long,
-                                                    ),
-                                                )
-                                                best_vis_loss = torch.minimum(loss_coarse, loss_full)
-                                            else:
-                                                best_vis = torch.full(
-                                                    loss_full.shape,
-                                                    int(Action.FULL_VISION),
-                                                    device=loss_full.device,
-                                                    dtype=torch.long,
-                                                )
-                                                best_vis_loss = loss_full
-                                            diff = loss_no - best_vis_loss
-                                            diff_open = diff[open_mask]
-                                            if diff_open.numel() == 1:
-                                                threshold = float(diff_open.detach().item())
-                                            else:
-                                                threshold = float(
-                                                    torch.quantile(
-                                                        diff_open.detach(),
-                                                        float(cfg.policy.policy_open_quantile),
-                                                    ).item()
-                                                )
-                                            margin = float(cfg.policy.policy_open_margin)
-                                            if margin > 0:
-                                                threshold = min(threshold, margin)
-                                            allow_no = diff <= threshold
-                                            open_targets = torch.where(
-                                                allow_no,
-                                                torch.full(
-                                                    best_vis.shape,
-                                                    int(Action.NO_VISION),
-                                                    device=best_vis.device,
-                                                    dtype=torch.long,
-                                                ),
-                                                best_vis,
+                                if cfg.policy.policy_open_enable and open_mask is not None and open_mask.any():
+                                    loss_no = loss_triplet[:, Action.NO_VISION]
+                                    loss_coarse = loss_triplet[:, Action.COARSE_VISION]
+                                    loss_full = loss_triplet[:, Action.FULL_VISION]
+                                    best_vis = torch.where(
+                                        loss_coarse <= loss_full,
+                                        torch.full(
+                                            loss_coarse.shape,
+                                            int(Action.COARSE_VISION),
+                                            device=loss_coarse.device,
+                                            dtype=torch.long,
+                                        ),
+                                        torch.full(
+                                            loss_full.shape,
+                                            int(Action.FULL_VISION),
+                                            device=loss_full.device,
+                                            dtype=torch.long,
+                                        ),
+                                    )
+                                    best_vis_loss = torch.minimum(loss_coarse, loss_full)
+                                    force_steps = int(cfg.policy.policy_open_force_visual_warmup_steps)
+                                    if force_steps > 0 and (stage_steps + 1) <= force_steps:
+                                        action_name = cfg.policy.policy_open_force_visual_action
+                                        if action_name == "best_vis":
+                                            open_targets = best_vis
+                                        elif action_name == "coarse":
+                                            open_targets = torch.full(
+                                                best_vis.shape,
+                                                int(Action.COARSE_VISION),
+                                                device=best_vis.device,
+                                                dtype=torch.long,
                                             )
-                                            policy_targets = policy_targets.clone()
-                                            policy_targets[open_mask] = open_targets[open_mask]
+                                        else:
+                                            open_targets = torch.full(
+                                                best_vis.shape,
+                                                int(Action.FULL_VISION),
+                                                device=best_vis.device,
+                                                dtype=torch.long,
+                                            )
+                                    else:
+                                        diff = loss_no - best_vis_loss
+                                        diff_open = diff[open_mask]
+                                        if diff_open.numel() == 1:
+                                            threshold = float(diff_open.detach().item())
+                                        else:
+                                            threshold = float(
+                                                torch.quantile(
+                                                    diff_open.detach(),
+                                                    float(cfg.policy.policy_open_quantile),
+                                                ).item()
+                                            )
+                                        margin = float(cfg.policy.policy_open_margin)
+                                        if margin > 0:
+                                            threshold = min(threshold, margin)
+                                        allow_no = diff <= threshold
+                                        open_targets = torch.where(
+                                            allow_no,
+                                            torch.full(
+                                                best_vis.shape,
+                                                int(Action.NO_VISION),
+                                                device=best_vis.device,
+                                                dtype=torch.long,
+                                            ),
+                                            best_vis if cfg.policy.policy_open_use_best_vis else torch.full(
+                                                best_vis.shape,
+                                                int(Action.FULL_VISION),
+                                                device=best_vis.device,
+                                                dtype=torch.long,
+                                            ),
+                                        )
+                                    policy_targets = policy_targets.clone()
+                                    policy_targets[open_mask] = open_targets[open_mask]
                                 min_full_ratio = float(cfg.policy.policy_min_full_ratio or 0.0)
                                 if min_full_ratio > 0:
                                     if cfg.policy.policy_min_full_warmup_steps > 0:
@@ -1178,8 +1225,59 @@ def main() -> None:
                             label_valid_ratio = float(period_label_tokens.item()) / float(
                                 period_label_total.item()
                             )
+                        def _schedule(start: float, end: float, warmup_steps: int, step: int) -> float:
+                            if warmup_steps > 0:
+                                prog = min(1.0, (step + 1) / float(warmup_steps))
+                            else:
+                                prog = 1.0
+                            return float(start) + prog * (float(end) - float(start))
+
+                        delta_no_start = (
+                            cfg.policy.policy_delta_no_start
+                            if cfg.policy.policy_delta_no_start is not None
+                            else cfg.policy.policy_delta_start
+                        )
+                        delta_no_end = (
+                            cfg.policy.policy_delta_no_end
+                            if cfg.policy.policy_delta_no_end is not None
+                            else cfg.policy.policy_delta_end
+                        )
+                        delta_coarse_start = (
+                            cfg.policy.policy_delta_coarse_start
+                            if cfg.policy.policy_delta_coarse_start is not None
+                            else cfg.policy.policy_delta_start
+                        )
+                        delta_coarse_end = (
+                            cfg.policy.policy_delta_coarse_end
+                            if cfg.policy.policy_delta_coarse_end is not None
+                            else cfg.policy.policy_delta_end
+                        )
+                        delta_no_step = _schedule(
+                            delta_no_start,
+                            delta_no_end,
+                            int(cfg.policy.policy_delta_warmup_steps),
+                            int(stage_steps),
+                        )
+                        delta_coarse_step = _schedule(
+                            delta_coarse_start,
+                            delta_coarse_end,
+                            int(cfg.policy.policy_delta_warmup_steps),
+                            int(stage_steps),
+                        )
+                        no_bias_step = _schedule(
+                            float(cfg.policy.policy_no_bias_start),
+                            float(cfg.policy.policy_no_bias_end),
+                            int(cfg.policy.policy_no_bias_warmup_steps),
+                            int(stage_steps),
+                        )
+                        open_bias_step = _schedule(
+                            float(cfg.policy.policy_open_visual_bias_start),
+                            float(cfg.policy.policy_open_visual_bias_end),
+                            int(cfg.policy.policy_open_visual_bias_warmup_steps),
+                            int(stage_steps),
+                        )
                         logger.info(
-                            "SUMMARY@%d samples=%d action_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
+                            "SUMMARY@%d samples=%d action_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f delta_no=%.4g delta_coarse=%.4g no_bias=%.4g open_bias=%.4g avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
                             global_step,
                             int(samples),
                             action_ratio,
@@ -1187,6 +1285,10 @@ def main() -> None:
                             mean_probs,
                             mean_loss_triplet,
                             label_valid_ratio,
+                            delta_no_step,
+                            delta_coarse_step,
+                            no_bias_step,
+                            open_bias_step,
                             avg_cost,
                             avg_task,
                             avg_policy,
