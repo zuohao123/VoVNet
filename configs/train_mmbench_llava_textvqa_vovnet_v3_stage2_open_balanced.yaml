@@ -1,0 +1,17 @@
+# Stage-2 override to reduce open-set over-bias toward vision while keeping warmup safety.
+training:
+  stage1_epochs: 0
+  epochs: 7
+  stage2_max_steps: 40001
+
+policy:
+  # Shorter forced-vision warmup for open-ended samples.
+  policy_open_force_visual_warmup_steps: 4000
+  # Allow no-vision when it is not clearly worse than vision.
+  policy_open_quantile: 0.5
+  policy_open_margin: 0.02
+  # Reduce extra visual bias on open-ended samples.
+  policy_open_visual_bias_start: 0.02
+  policy_open_visual_bias_end: 0.0
+  policy_open_visual_bias_warmup_steps: 12000
+
