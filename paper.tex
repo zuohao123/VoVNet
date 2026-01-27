@@ -85,7 +85,9 @@ Vision-language models (VLMs) typically invoke vision whenever an image is prese
 This unconditional vision usage wastes compute and increases latency.
 We propose \method, a cost-aware inference framework that estimates the per-instance value of vision and chooses among discrete visual budgets:
 skip vision, invoke a coarse budget, or allocate full vision.
-The policy is trained end-to-end with an explicit accuracy--cost objective and optional gain supervision, yielding controllable Pareto trade-offs.
+The policy is trained jointly with an explicit accuracy--cost objective using
+counterfactual loss targets and optional gain supervision, yielding controllable
+Pareto trade-offs.
 We evaluate on MMBench~\cite{liu2024mmbench}, MMMU~\cite{yue2023mmmu}, and TextVQA~\cite{singh2019textvqa} under a unified accuracy--cost protocol (consistent prompts/decoding/cost accounting),
 analyze action ratios and system profiling, and compare against fixed-budget, threshold-based, random-matched, and token-reduction baselines.
 \end{abstract}
@@ -144,7 +146,8 @@ We position our approach as addressing a distinct but orthogonal question:
 Modern VLMs combine a vision encoder with a large language model, enabling image-conditioned generation and reasoning.
 Representative systems include Flamingo~\cite{alayrac2022flamingo}, BLIP-2~\cite{li2023blip2}, PaLI~\cite{chen2022pali}, InstructBLIP~\cite{dai2023instructblip}, MiniGPT-4~\cite{zhu2023minigpt4}, IDEFICS~\cite{laurencon2023idefics}, Qwen-VL~\cite{bai2023qwenvl}, and LLaVA~\cite{liu2023llava}.
 Instruction tuning on multimodal data further improves alignment and usability, but these models typically treat vision as mandatory whenever an image is present.
-Our work is orthogonal to backbone design and instruction tuning: we retain the same VLM and focus on deciding when to invoke vision and at what budget.
+Our work is conceptually orthogonal to backbone design and instruction tuning: we retain the same VLM and focus on deciding when to invoke vision and at what budget.
+However, all empirical results in this paper are based on a single backbone family (Qwen-VL), and we avoid making cross-backbone generality claims.
 
 \subsection{Efficient Vision Encoding and Resolution Scaling}
 
@@ -194,10 +197,21 @@ Uncertainty estimation has long been used to guide selective prediction, abstent
 Selective classification~\cite{geifman2017selective} formalizes the accuracy--coverage trade-off, with models such as SelectiveNet~\cite{geifman2019selectivenet} integrating a reject option.
 Uncertainty measures such as predictive entropy or probability margins are widely used to decide when to abstain or request additional information.
 In multimodal contexts, uncertainty is often used heuristically to decide when auxiliary modalities should be consulted.
+Recent VLM-specific works explore richer uncertainty signals and abstention
+strategies beyond simple entropy thresholding. For example, HARMONY introduces
+human-in-the-loop visual labeling for trustworthy VQA~\cite{nath2025harmony},
+FESTA studies chain-of-thought prompting for sequential decision settings~\cite{bhattacharya2025festa},
+and ReCoVERR analyzes when selective prediction over-abstains and proposes
+improved abstention criteria for vision-language reasoning~\cite{srinivasan2024recoverr}.
+We also view our setting as closely related to conformal selective prediction,
+which provides principled coverage guarantees and abstention control
+under distribution shift~\cite{angelopoulos2021conformal,romano2020classification}.
 
 Our approach builds on this intuition but differs in two key aspects.
 First, uncertainty signals are used as part of a learned policy rather than a fixed thresholding rule.
-Second, the policy is trained end-to-end with an explicit cost-aware objective, optimizing an accuracy--cost trade-off rather than accuracy alone.
+Second, the policy is trained jointly with explicit cost-aware objectives and
+counterfactual loss targets, optimizing an accuracy--cost trade-off rather than
+accuracy alone.
 
 \subsection{Modality Selection, Gating, and Value of Information}
 Early multimodal fusion work explores learned gating of modalities, e.g., Gated Multimodal Units (GMU)~\cite{arevalo2017gmu},
@@ -343,6 +357,7 @@ We optimize a cost-aware objective:
 \mathcal{L}
 = \mathcal{L}_{\text{task}}
 + \lambda_{\text{cost}}\cdot \mathbb{E}[c(a)]
++ \lambda_{\text{policy}}\cdot \mathcal{L}_{\text{policy}}
 + \lambda_{\text{gain}}\cdot \mathcal{L}_{\text{gain}}
 + \lambda_{\text{cal}}\cdot \mathcal{L}_{\text{cal}}
 + \lambda_{\text{ent}}\cdot \mathcal{L}_{\text{ent}}.
@@ -353,6 +368,29 @@ We optimize a cost-aware objective:
 $\mathcal{L}_{\text{task}}$ is the standard LM or classification loss computed
 on the logits of the chosen path (text / coarse / full). Labels are constructed
 consistently with image-token insertion.
+
+\paragraph{Policy supervision from counterfactual losses.}
+Because the forward path uses a sampled discrete action, the task loss does not
+reliably backpropagate into the policy in our common straight-through setting.
+We therefore train the policy with an explicit supervised signal derived from
+counterfactual losses under \texttt{no\_grad}. For each sample we compute
+$(\mathcal{L}_{\mathrm{N}},\mathcal{L}_{\mathrm{C}},\mathcal{L}_{\mathrm{F}})$,
+define the best loss $\mathcal{L}_\star=\min_a \mathcal{L}_a$, and select the
+cheapest action that is within a margin of the best loss:
+\begin{equation}
+\tilde{a}(x)=\arg\min_{a\in\mathcal{A}}\; c(a)
+\quad\text{s.t.}\quad
+\mathcal{L}_a \le \mathcal{L}_\star + \delta_a.
+\label{eq:policy_target}
+\end{equation}
+We schedule separate margins for \no\ and \coarse\ ($\delta_{\mathrm{N}},\delta_{\mathrm{C}}$),
+and add small biases that penalize \no\ early in training to avoid collapse.
+We then minimize a cross-entropy policy loss:
+\begin{equation}
+\mathcal{L}_{\text{policy}}=\mathrm{CE}(\ell(x), \tilde{a}(x)).
+\end{equation}
+This makes the policy depend directly on task quality (via
+counterfactual losses) rather than only on the cost term.
 
 \paragraph{Gain supervision (optional).}
 We compute counterfactual gains under \texttt{no\_grad}:
@@ -375,13 +413,29 @@ an entropy bonus on the action distribution:
 This encourages action diversity during training while the cost term still
 pushes toward low computation when possible.
 
+\paragraph{Calibration term (defined and optional).}
+We use $\mathcal{L}_{\text{cal}}$ as an optional calibration surrogate on
+action probabilities, instantiated as a Brier score against the policy targets
+from \cref{eq:policy_target}:
+\begin{equation}
+\mathcal{L}_{\text{cal}}
+= \left\lVert \pi(\cdot\mid x) - \mathrm{onehot}(\tilde{a}(x)) \right\rVert_2^2.
+\end{equation}
+In our default configuration $\lambda_{\text{cal}}=0$ and this term is disabled;
+we still report calibration diagnostics (ECE) for both action confidence and task
+predictions in the evaluation.
+
 \paragraph{Action selection during training.}
 We use a Gumbel-Softmax distribution with temperature $\tau$ to obtain a
 differentiable $\pi(a\mid x)$ for the expected-cost term, and then sample a
-discrete action for the forward path. We optionally mix $\pi$ with a small
-uniform exploration probability $\epsilon$ to ensure the policy sees all
-branches during training. The soft-mixture path exists but is disabled when
-image-token expansion is required.
+discrete action for the forward path. In practice, gradients into the policy are
+primarily driven by $\mathcal{L}_{\text{policy}}$, $\mathcal{L}_{\text{gain}}$,
+and $\mathcal{L}_{\text{ent}}$, while $\mathcal{L}_{\text{task}}$ shapes the
+policy indirectly through the counterfactual losses used in
+\cref{eq:policy_target}. We optionally mix $\pi$ with a small uniform
+exploration probability $\epsilon$ to ensure the policy sees all branches during
+training. The soft-mixture path exists but is disabled when image-token
+expansion is required.
 \begin{equation}
 \pi(a\mid x)\approx \mathrm{GS}(\ell(x);\tau).
 \end{equation}
@@ -401,6 +455,8 @@ At inference, we select $a=\arg\max_a \pi(a\mid x)$ (or sample if enabled).
 For reliability, we apply an optional fallback:
 if $a=\mathrm{N}$ but $\mathrm{Ent}(x)>\tau$ (or $\mathrm{Mar}(x)<\tau_m$),
 we upgrade to $\mathrm{C}$ or $\mathrm{F}$ and report pre/post-fallback action ratios.
+Unless stated otherwise, $(\tau,\tau_m)$ are selected by a simple sweep on the
+validation split using the same cost accounting as the threshold baselines.
 
 \subsection{Algorithm}
 \label{sec:algo}
@@ -439,6 +495,7 @@ we upgrade to $\mathrm{C}$ or $\mathrm{F}$ and report pre/post-fallback action r
 We instantiate \method on top of a base VLM backbone (base\_vlm), using a Qwen-VL family model (Qwen3-VL-8B Instruct)~\cite{bai2023qwenvl} by default.
 The policy head is a lightweight MLP operating on pooled text hidden states (optionally augmented with uncertainty signals).
 We optionally support a higher-budget pathway (full\_vlm) for \full, though the default setting uses a shared backbone with different vision budgets.
+To keep conclusions conservative, all reported numbers use the same Qwen3-VL-8B backbone; cross-backbone evaluation is left to future work.
 
 \paragraph{Datasets and splits.}
 Our primary benchmark is MMBench (dev split)~\cite{liu2024mmbench}, since test labels are withheld.
@@ -460,19 +517,33 @@ Visual cost is the measured number of visual tokens when available; otherwise we
 We report action ratios (NO/COARSE/FULL) and cost for each method.
 
 \paragraph{Training.}
-We optimize \cref{eq:total_loss} with a two-stage schedule: a full-only warmup (2k steps) followed by
-policy training (default 12k steps; longer runs up to 40k for stability/ablation). Stage~2 uses gain
-supervision with a ranking hinge loss ($\text{margin}=0.2$), entropy regularization, and exploration
-($\epsilon=0.10$). We linearly warm up $\lambda_{\text{cost}}$ for the first 3k steps of Stage~2 and
-linearly ramp the policy delta target from 0 to 0.1. We sweep $\lambda_{\text{cost}}$ to trace an
-accuracy--cost Pareto curve and report multiple seeds for selected settings.
+We optimize \cref{eq:total_loss} with a two-stage schedule: a full-only warmup
+(default 1k--2k steps) followed by policy training (default 12k steps; longer
+runs up to 40k for stability/ablation). Stage~2 trains the policy primarily via
+loss-margin policy targets from \cref{eq:policy_target} computed under
+\texttt{no\_grad} counterfactual passes, with a cross-entropy weight
+$\lambda_{\text{policy}}$ (policy CE weight in code). We schedule separate
+margins for \no\ and \coarse, add a small \no\ bias early in Stage~2, and
+enforce a minimum full-action ratio during warmup to reduce collapse.
+For open-ended samples (no multiple-choice options), we switch to an open-set
+target rule that compares the text-only loss to the best visual loss and can
+force visual actions during an initial warmup window. We linearly warm up
+$\lambda_{\text{cost}}$ for the first $\approx$3k steps of Stage~2 and sweep
+$\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve, reporting
+multiple seeds for selected settings.
 
 \paragraph{Evaluation suite.}
 We execute a unified evaluation queue that covers MMBench (exact/fuzzy), TextVQA, and MMMU,
 plus all baselines (Always-Full/Coarse/No, Threshold (entropy/margin), Random matched
 global/bucketed, Resolution scaling, Token Pruning/Merge, Multi-Granularity, Fallback, and Oracle).
 All runs share the same config stack and checkpoint, and results are aggregated into JSON/CSV
-for plotting and table generation.
+for plotting and table generation. We use dataset-appropriate metrics
+(multiple-choice accuracy for MMBench/MMMU; VQA accuracy plus fuzzy matching
+diagnostics for TextVQA). Fallback thresholds and uncertainty-threshold baselines
+are tuned via sweeps on the validation split under the same cost accounting.
+When profiling latency/memory, we explicitly control KV-cache reuse settings and
+report both token-cost proxies and their empirical correlation with wall-clock
+latency to make cost proxies auditable.
 
 \subsection{Baselines}
 \label{sec:baselines}
@@ -502,7 +573,7 @@ We expect \method to dominate fixed-budget baselines by allocating vision select
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{placeholder_pareto_curve}
+  \includegraphics[width=\columnwidth]{fig_pareto_curve}
   \caption{Pareto frontier (accuracy vs visual cost).}
   \label{fig:pareto}
 \end{figure}
@@ -606,51 +677,40 @@ error rates to highlight when the policy is over-confident in text-only predicti
 To address the orthogonality claim, we evaluate \method combined with token pruning/merging (apply gating first,
 then apply pruning/merging within the chosen vision path) and report the resulting Pareto points. This allows
 direct comparison against pruning/merging-only baselines at comparable costs.
-
-\begin{table}[t]
-  \caption{Compositional baselines (gating + token reduction). Results will be filled with full runs.}
-  \label{tab:compose}
-  \centering
-  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
-  \begin{tabular}{p{0.38\columnwidth}ccc}
-    \toprule
-    Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
-    \midrule
-    \method + Pruning (0.5) & -- & -- & -- \\
-    \method + Merge (0.5) & -- & -- & -- \\
-    \bottomrule
-  \end{tabular}
-  }
-\end{table}
+Operationally, composition is defined as:
+(i) run the text-first policy to choose \no/\coarse/\full; and
+(ii) if a visual action is selected, apply pruning/merging within that action's
+visual budget before multimodal fusion. This isolates whether action selection
+remains beneficial when downstream token reduction is already available, and it
+controls for confounds such as differing prompt templates or cache reuse.
 
 \subsection{Overhead of Gain Supervision}
 \label{sec:overhead}
 We quantify the training-time overhead of gain supervision (extra N/C/F forward passes under \texttt{no\_grad})
 by reporting wall-clock time and throughput with/without gain supervision, keeping batch size and hardware fixed.
-This analysis clarifies the cost/benefit trade-off of gain supervision.
-
-\begin{table}[t]
-  \caption{Training-time overhead of gain supervision. Results will be filled with full runs.}
-  \label{tab:overhead}
-  \centering
-  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
-  \begin{tabular}{p{0.38\columnwidth}ccc}
-    \toprule
-    Setting & Time/step$\downarrow$ & Tokens/s$\uparrow$ & Acc$\uparrow$ \\
-    \midrule
-    No gain supervision & -- & -- & -- \\
-    With gain supervision & -- & -- & -- \\
-    \bottomrule
-  \end{tabular}
-  }
-\end{table}
+This analysis clarifies the cost/benefit trade-off of gain supervision. In our
+implementation, policy targets already require counterfactual losses; gain
+supervision adds only lightweight regression/ranking heads on top of those
+counterfactual signals. We therefore measure overhead by toggling
+\texttt{compute\_loss\_triplet} and gain supervision independently and report
+time/step plus tokens/s, which can be computed directly from training logs.
 
 \subsection{System Profiling}
 \label{sec:profiling}
 For deployment relevance, we profile end-to-end inference on fixed hardware:
 latency (P50/P90), peak GPU memory, and throughput.
+We time the per-batch forward region with CUDA events and explicit
+device synchronization, and reset peak-memory statistics per batch to avoid
+asynchronous under-reporting. This focuses the measurement on model execution
+rather than dataloader overhead while keeping preprocessing inside the timed
+region.
 We also report the effect of KV-cache reuse between the text-first and conditional-vision passes when supported,
-and ensure all baselines share identical cache settings.
+and ensure all baselines share identical cache settings. Because preprocessing
+and instrumentation can dominate wall-clock time for certain proxy baselines
+(e.g., repeated resizing or token bookkeeping), we report both proxy costs and
+measured latencies, and we include a correlation analysis between token-cost
+proxies and wall-clock latency/memory to validate that the cost proxy is a
+useful deployment surrogate.
 
 \begin{table}[t]
   \caption{System profiling on MMBench-dev.}
@@ -668,6 +728,10 @@ and ensure all baselines share identical cache settings.
   \end{tabular}
   }
 \end{table}
+We note that small reversals between fixed-vision settings (e.g., Always-Coarse
+vs.\ Always-Full) can arise when preprocessing or cache effects dominate the
+critical path; we therefore interpret such differences cautiously and emphasize
+paired comparisons under identical cache and preprocessing settings.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 5. DISCUSSION / LIMITATIONS
@@ -698,6 +762,11 @@ the wall-clock overhead and quantify whether the policy benefits justify this co
 Accurate cost accounting is crucial for meaningful Pareto comparisons.
 We prioritize measured visual token counts; when proxies are used, we ensure consistency across methods and report profiling results to validate that token-based costs correlate with wall-clock improvements.
 
+\paragraph{Backbone coverage.}
+Our empirical study focuses on a single backbone family (Qwen3-VL-8B).
+We therefore do not claim cross-backbone generality in this submission.
+Extending the study to additional backbones (e.g., LLaVA-style models) remains important future work.
+
 \paragraph{Policy errors and mitigations.}
 A key risk is skipping vision on instances where the image is essential.
 We mitigate this via a conservative fallback mechanism driven by uncertainty, and we report action-conditioned error slices to make failures transparent.
@@ -707,8 +776,8 @@ Our action space is deliberately simple for interpretability and deployment.
 Future work could extend \method with finer-grained actions (e.g., region-based refinement, multi-stage budgets) or learned cost predictors that incorporate hardware-specific latency models.
 We also note that our current action space is tied to image resolution budgets (N/C/F). While this is practical and
 easy to implement, it may not capture the optimal budget for architectures with different vision encoders or tokenization
-schemes. Evaluating alternative budget definitions (e.g., dynamic token caps or region-based refinement) is an important
-direction for generalization.
+schemes. Evaluating alternative budget definitions (e.g., dynamic token caps or region-based refinement) and testing them
+across multiple backbones is an important direction for future work.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 6. CONCLUSION
@@ -762,13 +831,18 @@ visual tokens produced by the vision encoder; if unavailable, we use a patch
 count proxy computed from preprocessing.
 
 \paragraph{Training schedule and optimization.}
-Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$ for 2k steps.
-Stage~2 trains the policy head for 12k steps by default (longer runs up to 40k for ablations).
-We use a ranking hinge gain loss ($\text{margin}=0.2$) with weight $\lambda_{\text{gain}}=6.0$,
-entropy regularization ($\lambda_{\text{ent}}=0.01$), and exploration $\epsilon=0.10$.
-We linearly warm up $\lambda_{\text{cost}}$ over the first 3k steps of Stage~2 and ramp the
-policy delta target from 0 to 0.1. We sweep $\lambda_{\text{cost}}$ to trace Pareto curves
-and report multiple seeds for selected settings. Optimizer: AdamW, learning rate
+Stage~1 (full-only) trains the task model with $\lambda_{\text{cost}}=0$ for
+about 1k steps in our default configuration. Stage~2 trains the policy head for
+12k steps by default (with longer runs up to 40k for stability and ablations).
+Policy learning is driven by loss-margin targets with a cross-entropy weight
+$\lambda_{\text{policy}}$ (policy CE weight), entropy regularization, and
+explicit exploration. Gain supervision is optional and disabled in our default
+setting; when enabled, we use ranking losses with margin 0.2. We linearly warm
+up $\lambda_{\text{cost}}$ over the first 3k steps of Stage~2, schedule
+separate margins for \no\ and \coarse, and apply small anti-collapse controls
+(e.g., a \no\ bias early in Stage~2 and a minimum full-action ratio during
+warmup). We sweep $\lambda_{\text{cost}}$ to trace Pareto curves and report
+multiple seeds for selected settings. Optimizer: AdamW, learning rate
 $5\times 10^{-5}$, weight decay 0, max grad norm 1.0, warmup steps 0.
 Per-device batch size 1 with gradient accumulation 4. Mixed precision fp16 and
 gradient checkpointing are enabled on V100 GPUs. Checkpoints are saved every 2{,}000 steps.
