@@ -49,10 +49,18 @@ def _flatten_results(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _job_done(job: Dict[str, Any]) -> bool:
+    output_dir = job.get("output_dir")
+    if not output_dir:
+        return False
+    return (Path(output_dir) / "summary.json").exists()
+
+
 def run_queue(jobs_path: Path, gpus: List[str], aggregate_path: Path, csv_path: Path | None, poll: float) -> None:
     config = _load_jobs(jobs_path)
     job_env = config.get("env", {})
-    jobs = deque(config.get("jobs", []))
+    all_jobs = config.get("jobs", [])
+    jobs = deque([job for job in all_jobs if not _job_done(job)])
     available = deque(gpus)
     running: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
@@ -80,6 +88,7 @@ def run_queue(jobs_path: Path, gpus: List[str], aggregate_path: Path, csv_path: 
                     "log": log_path,
                     "gpu": gpu,
                     "process": proc,
+                    "process_pid": proc.pid,
                     "log_handle": log_handle,
                     "start_time": datetime.utcnow().isoformat() + "Z",
                 }
@@ -100,6 +109,8 @@ def run_queue(jobs_path: Path, gpus: List[str], aggregate_path: Path, csv_path: 
             summary = _read_summary(item.get("output_dir", "")) if item.get("output_dir") else None
             item["summary"] = summary
             item["rows"] = _flatten_results(summary) if summary else []
+            item.pop("process", None)
+            item.pop("log_handle", None)
             results.append(item)
             available.append(item["gpu"])
         running = still_running
