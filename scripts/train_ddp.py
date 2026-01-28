@@ -15,7 +15,7 @@ import torch.distributed as dist
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler, WeightedRandomSampler
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -71,6 +71,86 @@ def init_distributed() -> tuple[bool, int, int, int]:
     backend = "nccl" if torch.cuda.is_available() else "gloo"
     dist.init_process_group(backend=backend, init_method="env://")
     return True, rank, world_size, local_rank
+
+
+def _normalize_dataset_name(name: Any) -> str:
+    if name is None:
+        return "unknown"
+    return str(name).strip().lower()
+
+
+def _extract_dataset_name(item: Any) -> str:
+    if isinstance(item, dict):
+        name = item.get("dataset") or item.get("source")
+        if name is None:
+            meta = item.get("meta")
+            if isinstance(meta, dict):
+                name = meta.get("dataset")
+        return _normalize_dataset_name(name)
+    return "unknown"
+
+
+def _build_sample_weights(dataset: Any, ratios: Dict[str, float]) -> List[float]:
+    ratio_map = {_normalize_dataset_name(k): float(v) for k, v in ratios.items()}
+    total = sum(ratio_map.values())
+    if total <= 0:
+        raise ValueError("data.sample_ratios must sum to a positive value")
+    ratio_map = {k: v / total for k, v in ratio_map.items()}
+
+    if hasattr(dataset, "items"):
+        names = [_extract_dataset_name(item) for item in dataset.items]
+    else:
+        names = [_extract_dataset_name(dataset[i]) for i in range(len(dataset))]
+
+    counts: Dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+
+    missing = {k: v for k, v in counts.items() if k not in ratio_map}
+    if missing:
+        logger.warning("sample_ratios missing datasets=%s; they will be dropped", missing)
+
+    weights: List[float] = []
+    for name in names:
+        ratio = ratio_map.get(name, 0.0)
+        denom = counts.get(name, 1)
+        weights.append(ratio / max(1, denom))
+
+    return weights
+
+
+class DistributedWeightedSampler(Sampler[int]):
+    """Weighted sampler compatible with DDP."""
+
+    def __init__(
+        self,
+        weights: List[float],
+        num_replicas: int,
+        rank: int,
+        seed: int = 0,
+    ) -> None:
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.num_samples = int(math.ceil(len(self.weights) / self.num_replicas))
+        self.total_size = self.num_samples * self.num_replicas
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        indices = torch.multinomial(
+            self.weights, self.total_size, replacement=True, generator=g
+        ).tolist()
+        indices = indices[self.rank : self.total_size : self.num_replicas]
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 def build_dataset(cfg: Config, split: str) -> torch.utils.data.Dataset:
@@ -710,11 +790,22 @@ def main() -> None:
         prompt_template=cfg.data.prompt_template,
     )
 
-    train_sampler = (
-        DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        if distributed
-        else None
-    )
+    train_sampler: Sampler[int] | None = None
+    sample_weights = None
+    if cfg.data.sample_ratios:
+        sample_weights = _build_sample_weights(train_dataset, cfg.data.sample_ratios)
+        if distributed:
+            train_sampler = DistributedWeightedSampler(
+                sample_weights, num_replicas=world_size, rank=rank, seed=cfg.training.seed
+            )
+        else:
+            train_sampler = WeightedRandomSampler(
+                sample_weights, num_samples=len(sample_weights), replacement=True
+            )
+    elif distributed:
+        train_sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+        )
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.training.per_device_batch_size,
@@ -852,6 +943,7 @@ def main() -> None:
         "gain_loss": 0.0,
         "entropy_loss": 0.0,
         "policy_loss": 0.0,
+        "prior_loss": 0.0,
     }
     summary_every = int(getattr(cfg.training, "summary_every", 0) or 0)
     period_samples = torch.zeros(1, device=device)
@@ -1056,6 +1148,9 @@ def main() -> None:
                                     cost_triplet = torch.stack(
                                         [zeros, token_count_coarse, token_count_full], dim=-1
                                     )
+                                    if cfg.policy.cost_normalize:
+                                        denom = token_count_full.clamp(min=1).unsqueeze(-1)
+                                        cost_triplet = cost_triplet / denom
                                     loss_scale = (
                                         loss_triplet.detach()
                                         .mean(dim=-1, keepdim=True)
@@ -1282,10 +1377,64 @@ def main() -> None:
                                         policy_targets_soft = _enforce_min_full_ratio_soft(
                                             policy_targets_soft, float(min_full_ratio_step)
                                         )
+                        policy_sample_weights = None
+                        if cfg.policy.policy_loss_weights:
+                            weight_map = {
+                                _normalize_dataset_name(k): float(v)
+                                for k, v in cfg.policy.policy_loss_weights.items()
+                            }
+                            default_weight = weight_map.get("default", 1.0)
+                            batch_datasets = batch.get("dataset") or []
+                            if batch_datasets:
+                                weights = [
+                                    weight_map.get(_normalize_dataset_name(name), default_weight)
+                                    for name in batch_datasets
+                                ]
+                                policy_sample_weights = torch.tensor(
+                                    weights, device=outputs["logits"].device, dtype=torch.float32
+                                )
+                        expected_cost_for_loss = outputs["expected_cost"]
+                        if cfg.policy.cost_normalize:
+                            token_count_full = outputs.get("token_count_full")
+                            if token_count_full is not None:
+                                expected_cost_for_loss = expected_cost_for_loss / token_count_full.clamp(
+                                    min=1
+                                )
+                        prior_weight_start = (
+                            cfg.policy.policy_prior_weight_start
+                            if cfg.policy.policy_prior_weight_start is not None
+                            else cfg.policy.policy_prior_weight
+                        )
+                        prior_weight_end = (
+                            cfg.policy.policy_prior_weight_end
+                            if cfg.policy.policy_prior_weight_end is not None
+                            else cfg.policy.policy_prior_weight
+                        )
+                        prior_weight_step = _schedule_value(
+                            float(prior_weight_start),
+                            float(prior_weight_end),
+                            int(cfg.policy.policy_prior_weight_warmup_steps),
+                            int(stage_steps),
+                        )
+                        prior_probs = None
+                        if cfg.policy.policy_prior_probs:
+                            prior_probs = torch.tensor(
+                                cfg.policy.policy_prior_probs,
+                                device=outputs["logits"].device,
+                                dtype=torch.float32,
+                            )
+                            if prior_probs.numel() != len(Action):
+                                if rank == 0:
+                                    logger.warning(
+                                        "policy_prior_probs length=%s != num_actions=%s; ignoring",
+                                        prior_probs.numel(),
+                                        len(Action),
+                                    )
+                                prior_probs = None
                         losses = compute_total_loss(
                             outputs["logits"],
                             outputs.get("labels"),
-                            outputs["expected_cost"],
+                            expected_cost_for_loss,
                             lambda_cost,
                             action_probs=outputs.get("action_probs"),
                             lambda_entropy=lambda_entropy_step,
@@ -1293,6 +1442,9 @@ def main() -> None:
                             action_targets=policy_targets_hard,
                             action_targets_soft=policy_targets_soft,
                             lambda_policy=lambda_policy_step,
+                            policy_sample_weights=policy_sample_weights,
+                            policy_prior=prior_probs,
+                            policy_prior_weight=prior_weight_step,
                             calibration_value=None,
                             lambda_cal=cfg.policy.calibration_lambda,
                             gain_pred=outputs.get("gain_pred"),
@@ -1387,6 +1539,9 @@ def main() -> None:
                 ) * batch_size
                 window_losses["policy_loss"] += float(
                     losses.get("policy_loss", 0.0).item()
+                ) * batch_size
+                window_losses["prior_loss"] += float(
+                    losses.get("prior_loss", 0.0).item()
                 ) * batch_size
 
                 if summary_every > 0:

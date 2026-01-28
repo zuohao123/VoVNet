@@ -60,6 +60,7 @@ class PolicyConfig:
     cost_scale: float = 1.0
     cost_c1: float = 1.0
     cost_c2: float = 4.0
+    cost_normalize: bool = False
     lambda_cost: float = 0.1
     cost_warmup_steps: int = 0
     calibration_lambda: float = 0.0
@@ -110,6 +111,12 @@ class PolicyConfig:
     collapse_warn_ratio_threshold: float = 0.01
     collapse_warn_window_steps: int = 1000
     explore_prob: float = 0.0
+    policy_loss_weights: Dict[str, float] | None = None
+    policy_prior_probs: List[float] | None = None
+    policy_prior_weight: float = 0.0
+    policy_prior_weight_start: float | None = None
+    policy_prior_weight_end: float | None = None
+    policy_prior_weight_warmup_steps: int = 0
 
 
 @dataclass
@@ -137,6 +144,7 @@ class DataConfig:
     image_field: str = "image"
     prompt_template: str = "Question: {question}\nAnswer:"
     max_samples: int | None = None
+    sample_ratios: Dict[str, float] | None = None
 
 
 @dataclass
@@ -527,6 +535,14 @@ def _to_float_list_list(value: Any, field: str) -> Any:
     return [_to_float_list(item, field) for item in value]
 
 
+def _to_float_dict(value: Any, field: str) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be a mapping of floats")
+    return {str(k): _to_float(v, f"{field}.{k}") for k, v in value.items()}
+
+
 def _coerce_types(cfg: Config) -> None:
     cfg.training.lr = _to_float(cfg.training.lr, "training.lr")
     cfg.training.weight_decay = _to_float(cfg.training.weight_decay, "training.weight_decay")
@@ -697,6 +713,27 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.soft_target_temperature = _to_float(
         cfg.policy.soft_target_temperature, "policy.soft_target_temperature"
     )
+    cfg.policy.policy_loss_weights = _to_float_dict(
+        cfg.policy.policy_loss_weights, "policy.policy_loss_weights"
+    )
+    cfg.policy.policy_prior_probs = _to_float_list(
+        cfg.policy.policy_prior_probs, "policy.policy_prior_probs"
+    )
+    cfg.policy.policy_prior_weight = _to_float(
+        cfg.policy.policy_prior_weight, "policy.policy_prior_weight"
+    )
+    cfg.policy.policy_prior_weight_start = _to_float(
+        cfg.policy.policy_prior_weight_start,
+        "policy.policy_prior_weight_start",
+        allow_none=True,
+    )
+    cfg.policy.policy_prior_weight_end = _to_float(
+        cfg.policy.policy_prior_weight_end, "policy.policy_prior_weight_end", allow_none=True
+    )
+    cfg.policy.policy_prior_weight_warmup_steps = _to_int(
+        cfg.policy.policy_prior_weight_warmup_steps,
+        "policy.policy_prior_weight_warmup_steps",
+    )
     cfg.policy.collapse_warn_ratio_threshold = _to_float(
         cfg.policy.collapse_warn_ratio_threshold, "policy.collapse_warn_ratio_threshold"
     )
@@ -744,6 +781,14 @@ def _coerce_types(cfg: Config) -> None:
         cfg.policy.baseline_prune_mode = cfg.policy.baseline_prune_mode.strip().lower()
     cfg.policy.baseline_pool_factor = _to_int(
         cfg.policy.baseline_pool_factor, "policy.baseline_pool_factor"
+    )
+    if isinstance(cfg.policy.cost_normalize, str):
+        cfg.policy.cost_normalize = (
+            cfg.policy.cost_normalize.strip().lower() in {"1", "true", "yes"}
+        )
+
+    cfg.data.sample_ratios = _to_float_dict(
+        cfg.data.sample_ratios, "data.sample_ratios"
     )
 
     cfg.vision_budget.coarse_long_side = _to_int(

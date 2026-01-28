@@ -252,6 +252,13 @@ class VLMDataCollator:
             [len(choices) > 0 for choices in cleaned_choices], dtype=torch.bool
         )
 
+        datasets = []
+        for item in batch:
+            dataset_name = item.get("dataset")
+            if dataset_name is None:
+                dataset_name = item.get("meta", {}).get("dataset")
+            datasets.append(dataset_name or "unknown")
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -261,4 +268,5 @@ class VLMDataCollator:
             "answers": answer_refs,
             "meta": [item.get("meta", {}) for item in batch],
             "has_choices": has_choices,
+            "dataset": datasets,
         }

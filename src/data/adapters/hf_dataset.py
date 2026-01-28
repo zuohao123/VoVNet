@@ -25,6 +25,8 @@ class HFDatasetAdapter(Dataset):
         except Exception as exc:  # pragma: no cover - import guard
             raise RuntimeError("datasets is required for HF dataset loading") from exc
 
+        self.dataset_name = dataset_name
+
         if subset:
             self.dataset = load_dataset(dataset_name, subset, split=split)
         else:
@@ -46,10 +48,13 @@ class HFDatasetAdapter(Dataset):
         image = item.get(self.image_field)
         if isinstance(image, Image.Image):
             image = image.convert("RGB")
+        meta = dict(item.get("meta", {}))
+        meta.setdefault("dataset", self.dataset_name)
         return {
             "question": question,
             "answer": answer,
             "image": image,
             "id": str(item.get("id", idx)),
-            "meta": dict(item.get("meta", {})),
+            "meta": meta,
+            "dataset": self.dataset_name,
         }

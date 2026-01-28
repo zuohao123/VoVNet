@@ -3,6 +3,10 @@ data:
   train_jsonl: "data/processed/mmbench_llava_textvqa/mmbench_llava_textvqa_train_with_prompt_norm_relabeled.jsonl"
   eval_jsonl: "data/processed/mmbench/mmbench_dev_text_prompt.jsonl"
   prompt_template: "Question: {question}\nAnswer:"
+  sample_ratios:
+    mmbench: 1.0
+    textvqa: 1.0
+    text: 1.0
 
 model:
   torch_dtype: "float16"
@@ -71,6 +75,7 @@ policy:
   enable_soft_targets: true
   soft_target_temperature: 1.0
   lambda_cost: 0.0005
+  cost_normalize: true
   cost_scale: 0.05
   cost_warmup_steps: 2000
   gumbel_tau: 1.5
@@ -80,6 +85,15 @@ policy:
   entropy_weight_end: 0.02
   entropy_weight_warmup_steps: 10000
   explore_prob: 0.2
+  policy_loss_weights:
+    mmbench: 1.0
+    textvqa: 0.7
+    text: 0.4
+    default: 0.5
+  policy_prior_probs: [0.2, 0.4, 0.4]
+  policy_prior_weight_start: 0.0
+  policy_prior_weight_end: 0.008
+  policy_prior_weight_warmup_steps: 5000
 
 vision_budget:
   coarse_long_side: 224

@@ -66,6 +66,7 @@ def compute_policy_loss(
     action_logits: Tensor | None,
     action_targets: Tensor | None,
     action_targets_soft: Tensor | None = None,
+    sample_weights: Tensor | None = None,
 ) -> Tensor:
     """Compute policy loss over action logits.
 
@@ -77,10 +78,33 @@ def compute_policy_loss(
     if action_targets_soft is not None:
         log_probs = F.log_softmax(action_logits, dim=-1)
         targets = action_targets_soft.detach()
-        return F.kl_div(log_probs, targets, reduction="batchmean")
+        per = F.kl_div(log_probs, targets, reduction="none").sum(dim=-1)
+        if sample_weights is not None:
+            per = per * sample_weights
+        return per.mean()
     if action_targets is None:
         return torch.tensor(0.0, device=action_logits.device)
-    return F.cross_entropy(action_logits, action_targets)
+    per = F.cross_entropy(action_logits, action_targets, reduction="none")
+    if sample_weights is not None:
+        per = per * sample_weights
+    return per.mean()
+
+
+def compute_action_prior_loss(
+    action_probs: Tensor | None,
+    prior_probs: Tensor | None,
+    weight: float,
+) -> Tensor:
+    """Encourage action distribution to match a weak prior."""
+    if action_probs is None or prior_probs is None or weight <= 0:
+        device = action_probs.device if action_probs is not None else torch.device("cpu")
+        return torch.tensor(0.0, device=device)
+    probs = action_probs.mean(dim=0).clamp(min=1e-8)
+    prior = prior_probs.to(device=probs.device, dtype=probs.dtype)
+    prior = prior / prior.sum().clamp_min(1e-8)
+    prior = prior.clamp(min=1e-8)
+    kl = (probs * (probs.log() - prior.log())).sum()
+    return weight * kl
 
 
 def compute_gain_loss(
@@ -127,6 +151,9 @@ def compute_total_loss(
     action_targets: Tensor | None = None,
     action_targets_soft: Tensor | None = None,
     lambda_policy: float = 0.0,
+    policy_sample_weights: Tensor | None = None,
+    policy_prior: Tensor | None = None,
+    policy_prior_weight: float = 0.0,
     calibration_value: Tensor | None = None,
     lambda_cal: float = 0.0,
     gain_pred: Tensor | None = None,
@@ -154,6 +181,12 @@ def compute_total_loss(
         action_logits=action_logits,
         action_targets=action_targets,
         action_targets_soft=action_targets_soft,
+        sample_weights=policy_sample_weights,
+    )
+    prior_loss = compute_action_prior_loss(
+        action_probs=action_probs,
+        prior_probs=policy_prior,
+        weight=policy_prior_weight,
     )
     total_loss = (
         task_loss
@@ -162,6 +195,7 @@ def compute_total_loss(
         + lambda_gain * gain_loss
         + entropy_loss
         + lambda_policy * policy_loss
+        + prior_loss
     )
     return {
         "total_loss": total_loss,
@@ -171,4 +205,5 @@ def compute_total_loss(
         "gain_loss": gain_loss,
         "entropy_loss": entropy_loss,
         "policy_loss": policy_loss,
+        "prior_loss": prior_loss,
     }

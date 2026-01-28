@@ -66,6 +66,10 @@ class JsonlVQADataset(Dataset):
         image = self._load_image(image_path) if image_path else None
         sample_id = str(item.get("id", idx))
         meta = dict(item.get("meta", {}))
+        dataset_name = item.get("dataset") or item.get("source") or meta.get("dataset")
+        if dataset_name is None:
+            dataset_name = "unknown"
+        meta.setdefault("dataset", dataset_name)
         return {
             "question": question,
             "answer": answer,
@@ -75,6 +79,7 @@ class JsonlVQADataset(Dataset):
             "choices": choices,
             "id": sample_id,
             "meta": meta,
+            "dataset": dataset_name,
         }
 
     def _resolve_answer(self, value: Any) -> str:
