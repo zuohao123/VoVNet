@@ -93,30 +93,25 @@ We evaluate on MMBench~\cite{liu2024mmbench}, MMMU~\cite{yue2023mmmu}, and TextV
 \section{Introduction}
 \label{sec:intro}
 
-Large vision-language models (VLMs) such as Flamingo, BLIP-2, LLaVA, and Qwen-VL~\cite{alayrac2022flamingo,li2023blip2,liu2023llava,bai2023qwenvl} have become a standard interface for multimodal reasoning, but their inference pipelines are often \emph{compute-oblivious}:
-the vision encoder is invoked whenever an image is present, regardless of whether the question actually requires visual evidence.
-In practical deployments, this ``always-look'' behavior is costly.
-Vision encoding can dominate latency, constrain batch size due to memory pressure, and reduce throughput---especially when image resolution or visual token count is high.
+Vision-language models (VLMs) are increasingly deployed under latency and compute constraints, yet their inference pipelines typically invoke vision whenever an image is present. This ``always-on'' behavior is wasteful when the answer can be inferred from text alone, and it obscures an earlier decision that matters in practice: \emph{whether to invoke vision at all}, and at what budget.
 
-At the same time, many real-world queries are \emph{vision-redundant}.
-For example, the instruction may be answerable by commonsense or by text in the prompt; the image may be irrelevant or provide only marginal benefit.
-Conversely, other queries are \emph{vision-critical}, requiring fine-grained perception or OCR.
-These observations suggest that the \emph{marginal value of invoking vision} varies substantially across instances.
-A uniform vision policy wastes compute on low-value inputs and may under-allocate compute to vision-critical queries under tight budgets.
+We frame efficient multimodal inference as a \textbf{cost-aware decision problem} over three actions: \no, \coarse, and \full.
+The core observation is that \emph{coarse vision is often sufficient} while full vision yields diminishing returns on many queries.
+This suggests that conditional vision invocation can move models to a better accuracy--cost Pareto frontier, reducing unnecessary visual computation without sacrificing accuracy on vision-critical inputs.
 
 \paragraph{Problem.}
-We study \emph{cost-aware vision invocation}: for each input $(x, I)$, decide whether to invoke vision and, if so, at what budget, while optimizing an explicit accuracy--cost trade-off.
-This is distinct from token-reduction methods that assume vision is always encoded and only reduce computation \emph{after} visual features are produced.
+Given text $x$ and image $I$, choose an action $a\in\{\no,\coarse,\full\}$ that trades task loss against visual cost.
+This is distinct from token reduction methods that assume vision is always encoded and only reduce computation \emph{after} visual features are produced.
 
 \paragraph{Approach.}
-We propose \method, a text-first framework that performs a lightweight text-only forward pass, then uses a small policy head to estimate \vov and choose among \no, \coarse, and \full.
-Training minimizes task loss plus an expected cost penalty via counterfactual loss targets, enabling controllable Pareto frontiers.
+We propose \method, a text-first policy that makes a lightweight text-only pass, then predicts a distribution over actions.
+The policy is trained with a cost-aware objective using \emph{soft targets} derived from counterfactual losses, yielding a simple learning formulation rather than a collection of routing heuristics.
 
 \paragraph{Contributions.}
 \begin{itemize}
-  \item We formulate value-of-vision as a discrete action-selection problem with interpretable budgets (\no/\coarse/\full) and explicit cost accounting.
-  \item We introduce a text-first policy trained with counterfactual loss targets, directly linking action choice to task quality under an accuracy--cost objective.
-  \item We provide a unified evaluation protocol and baseline suite for Pareto analysis, action distributions, and system profiling across MMBench, MMMU, and TextVQA.
+  \item We cast \emph{vision invocation} as a cost-aware action-selection problem and learn a text-first policy over \no/\coarse/\full.
+  \item We show that coarse vision frequently matches full vision, enabling substantial cost reductions without large accuracy loss.
+  \item We provide a unified evaluation suite (Pareto curves, action distributions, profiling) and compare to fixed-budget, uncertainty-threshold, random-matched, and token-reduction baselines across MMBench, MMMU, and TextVQA.
 \end{itemize}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -140,6 +135,11 @@ Representative systems include Flamingo~\cite{alayrac2022flamingo}, BLIP-2~\cite
 Instruction tuning on multimodal data further improves alignment and usability, but these models typically treat vision as mandatory whenever an image is present.
 Our work is conceptually orthogonal to backbone design and instruction tuning: we retain the same VLM and focus on deciding when to invoke vision and at what budget.
 However, all empirical results in this paper are based on a single backbone family (Qwen-VL), and we avoid making cross-backbone generality claims.
+
+Specialized vision-centric benchmarks highlight regimes where vision is indispensable.
+Open-domain visual entity recognition (OVEN) stresses large-label visual grounding~\cite{hu2023open},
+while self-supervised character-to-character distillation (CCD) targets low-level OCR robustness~\cite{guan2023ccd}.
+These settings contextualize our focus on selectively invoking vision rather than assuming it is always required.
 
 \subsection{Efficient Vision Encoding and Resolution Scaling}
 
@@ -177,6 +177,7 @@ Classic early-exit architectures (e.g., BranchyNet~\cite{teerapittayanon2017bran
 
 Recent system-level acceleration extends these ideas to large multimodal models.
 TwigVLM~\cite{shao2025twigvlm} accelerates large VLMs by combining twig-guided token pruning during prefilling with speculative decoding during generation, highlighting that end-to-end speedups require optimizing both prefilling and decoding.
+Streaming video settings further motivate budgeted visual processing and efficient multimodal inference pipelines, as exemplified by VideoLLM-online~\cite{chen2024videollm}.
 
 These approaches primarily adapt \emph{how much computation is performed within a fixed multimodal pipeline}.
 By contrast, our work introduces conditional computation at the modality level:
@@ -193,6 +194,7 @@ Recent VLM-specific works explore richer uncertainty signals and abstention
 strategies beyond simple entropy thresholding. For example, HARMONY introduces
 human-in-the-loop visual labeling for trustworthy VQA~\cite{nath2025harmony},
 FESTA studies chain-of-thought prompting for sequential decision settings~\cite{bhattacharya2025festa},
+SRICE integrates uncertainty-aware agentic tool use for multimodal reasoning~\cite{zhi2025srice},
 and ReCoVERR analyzes when selective prediction over-abstains and proposes
 improved abstention criteria for vision-language reasoning~\cite{srinivasan2024recoverr}.
 We also view our setting as closely related to conformal selective prediction,
@@ -204,6 +206,14 @@ First, uncertainty signals are used as part of a learned policy rather than a fi
 Second, the policy is trained jointly with explicit cost-aware objectives and
 counterfactual loss targets, optimizing an accuracy--cost trade-off rather than
 accuracy alone.
+
+Recent agentic and interleaved multimodal reasoning frameworks revisit or interleave visual evidence,
+including selective visual revisitation~\cite{chung2025dontlook}, vision-interleaved chains of thought~\cite{wang2025vicot},
+implicit chain-of-vision fine-tuning~\cite{huang2025icov}, and interleaved latent visual reasoning with selective perceptual modeling~\cite{dong2025ilvr}.
+Visual Sketchpad introduces a visual workspace for reasoning~\cite{hu2024visualsketchpad}, and the
+Thinking with Images survey synthesizes this emerging line of work~\cite{su2025thinking}.
+These efforts emphasize richer reasoning traces and tool use, whereas our focus is the decision of
+whether to invoke vision at all and at what budget under an explicit cost constraint.
 
 \subsection{Modality Selection, Gating, and Value of Information}
 Early multimodal fusion work explores learned gating of modalities, e.g., Gated Multimodal Units (GMU)~\cite{arevalo2017gmu},
@@ -230,20 +240,15 @@ This perspective motivates comparisons against resolution scaling, token pruning
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{Method}
 \label{sec:method}
-
-
-
 \subsection{Problem Setup}
 \label{sec:setup}
 Let $x$ be the input text and $I$ the associated image.
-A VLM predicts an output sequence $y$ (or a discrete label).
 We introduce an action $a \in \mathcal{A}=\{\mathrm{N},\mathrm{C},\mathrm{F}\}$,
-where $\mathrm{N}$=\textsc{No-Vision}, $\mathrm{C}$=\textsc{Coarse-Vision},
-and $\mathrm{F}$=\textsc{Full-Vision}.
-Each action has a cost $c(a)$ capturing vision-related computation
-(e.g., visual token count, pixels processed, or latency proxy).
-Our goal is to learn a policy $\pi(a\mid x)$ that selects $a$ from a text-first pass,
-minimizing task error while controlling expected cost.
+where $\mathrm{N}$=\no, $\mathrm{C}$=\coarse, and $\mathrm{F}$=\full.
+Each action incurs a cost $c(a)$ that captures vision-related computation
+(visual token count or a proxy from preprocessing).
+Our goal is to learn a policy $\pi(a\mid x)$ that minimizes task loss while
+controlling expected cost.
 
 \subsection{\method Overview}
 \label{sec:overview}
@@ -261,65 +266,21 @@ minimizing task error while controlling expected cost.
   \label{fig:framework}
 \end{figure*}
 
-\paragraph{Stage 1: Text-first pass.}
-We run a text-only forward pass through the base language model
-(no visual tokens) to obtain hidden states $H(x)$ and logits $z(x)$.
-This is a single forward pass over the prompt (no autoregressive decoding) and
-avoids the vision encoder, so its overhead is modest relative to full multimodal inference.
-We mean-pool the last-layer hidden states with the attention mask:
-\begin{equation}
+\paragraph{Text-first policy.}
+We run a text-only forward pass to obtain hidden states $H(x)$ and logits.
+We mean-pool the last-layer states to form a compact representation
+\[
 h(x)=\frac{\sum_{t} H_t(x)\cdot m_t}{\sum_{t} m_t},
-\end{equation}
-where $m_t\in\{0,1\}$ is the attention mask.
-We also compute uncertainty signals from the last-token logits,
-used for optional fallback rules and uncertainty-threshold baselines;
-in ablations we concatenate them to the policy input:
-\begin{equation}
-\mathrm{Ent}(x)=-\sum_v p(v\mid x)\log p(v\mid x),\quad
-\mathrm{Mar}(x)=p_{(1)}-p_{(2)}.
-\end{equation}
+\]
+where $m_t$ is the attention mask. A lightweight policy head maps $h(x)$ to
+action logits $\ell(x)$ and action probabilities $\pi(a\mid x)=\softmax(\ell(x))_a$.
+Optional uncertainty features (entropy/margin) are treated as engineering
+stabilizations and described in the appendix.
 
-\paragraph{Stage 2: Value-of-Vision policy head.}
-A lightweight MLP (\texttt{vow\_head}) maps $h(x)$ (optionally augmented with uncertainty features)
-to a compact feature.
-We predict action logits in one of two modes:
-\begin{equation}
-\ell(x)=W_{\pi}h(x) \quad \text{(logits mode)}
-\end{equation}
-or a gain head that predicts the benefit of vision:
-\begin{equation}
-\hat{g}(x)=[\hat{g}_{\mathrm{C}},\hat{g}_{\mathrm{F}}],\quad
-\ell(x)=[0,\hat{g}_{\mathrm{C}},\hat{g}_{\mathrm{F}}].
-\end{equation}
-Action probabilities are $\pi(a\mid x)=\softmax(\ell(x))_a$.
-
-\paragraph{Stage 3: Conditional vision invocation.}
-Given action $a$:
-\begin{itemize}
-  \item $\mathrm{N}$: skip vision and use the text-only path;
-  \item $\mathrm{C}$: invoke vision with a low budget;
-  \item $\mathrm{F}$: invoke vision with a high budget.
-\end{itemize}
-If a separate \texttt{full\_vlm} is provided, $\mathrm{F}$ uses it; otherwise it
-reuses the base VLM. When explicit image tokens are required, we insert a
-dummy image token repeated $t(I;b)$ times to align text and visual tokens.
-This preserves the expected token layout for models that require explicit image tokens,
-but may introduce a distribution shift for the text-only path; we therefore report
-an ablation comparing token-based \no\ against true text-only execution (when
-supported by the backbone) in \cref{sec:ablation}, and analyze its impact on
-calibration in \cref{sec:reliability}.
-
-\paragraph{Implementation notes (brief).}
-Unless otherwise stated, we use a Qwen-VL family backbone (Qwen3-VL-8B Instruct)~\cite{bai2023qwenvl} with LoRA
-adapters on attention projections, and train in two stages:
-Stage~1 fixes $a=\mathrm{F}$ with $\lambda_{\text{cost}}=0$ to warm up the task
-model, and Stage~2 optimizes the policy with $\lambda_{\text{cost}}>0$.
-In our main setting, coarse/full budgets are implemented by resizing the
-long-side to 224/448 pixels with patch size 14 (see \cref{app:impl} for full
-details). All baselines share identical prompt templates and decoding settings.
-When supported by the backbone, we reuse the text KV-cache from the text-first
-pass in the conditional vision pass; otherwise we re-run the text prefix to keep
-the comparison fair across methods. We report which mode is used in profiling.
+\paragraph{Conditional vision invocation.}
+Given the selected action, we either skip vision (\no), run a low-budget visual
+encoder (\coarse), or run a higher-budget encoder (\full). The model reuses the
+same VLM backbone with different visual budgets unless otherwise noted.
 
 \subsection{Vision Budget and Cost}
 \label{sec:budget}
@@ -350,111 +311,36 @@ We optimize a cost-aware objective:
 = \mathcal{L}_{\text{task}}
 + \lambda_{\text{cost}}\cdot \mathbb{E}[c(a)]
 + \lambda_{\text{policy}}\cdot \mathcal{L}_{\text{policy}}
-+ \lambda_{\text{gain}}\cdot \mathcal{L}_{\text{gain}}
-+ \lambda_{\text{cal}}\cdot \mathcal{L}_{\text{cal}}
-+ \lambda_{\text{ent}}\cdot \mathcal{L}_{\text{ent}}.
++ \lambda_{\text{ent}}\cdot \mathcal{L}_{\text{ent}},
 \label{eq:total_loss}
 \end{equation}
+where $\mathcal{L}_{\text{task}}$ is the standard LM/classification loss on the
+chosen path, and $\mathcal{L}_{\text{ent}}$ is an entropy regularizer (optional).
 
-\paragraph{Task loss.}
-$\mathcal{L}_{\text{task}}$ is the standard LM or classification loss computed
-on the logits of the chosen path (text / coarse / full). Labels are constructed
-consistently with image-token insertion.
+\paragraph{Soft target supervision.}
+We compute counterfactual losses $(\mathcal{L}_{\mathrm{N}},\mathcal{L}_{\mathrm{C}},\mathcal{L}_{\mathrm{F}})$
+under \texttt{no\_grad} and form soft targets:
+\begin{equation}
+p^{*}(a) \propto \exp\left(-\mathcal{L}_a / T\right),
+\end{equation}
+where $T$ controls softness. The policy loss is:
+\begin{equation}
+\mathcal{L}_{\text{policy}} = \mathrm{KL}\!\left(p^{*}\, \|\, \pi(\cdot\mid x)\right).
+\end{equation}
+This turns policy learning into a smooth, cost-aware learning problem rather than
+hard heuristic routing. Engineering stabilizations (margins, overrides, fallback)
+are described in the appendix.
 
-\paragraph{Policy supervision from counterfactual losses.}
-Because the forward path uses a sampled discrete action, the task loss does not
-reliably backpropagate into the policy in our straight-through setting.
-We supervise the policy with a counterfactual signal computed under
-\texttt{no\_grad}. For each sample we compute
-$(\mathcal{L}_{\mathrm{N}},\mathcal{L}_{\mathrm{C}},\mathcal{L}_{\mathrm{F}})$,
-define the best loss $\mathcal{L}_\star=\min_a \mathcal{L}_a$, and select the
-cheapest action that is within a margin of the best loss:
-\begin{equation}
-\tilde{a}(x)=\arg\min_{a\in\mathcal{A}}\; c(a)
-\quad\text{s.t.}\quad
-\mathcal{L}_a \le \mathcal{L}_\star + \delta_a.
-\label{eq:policy_target}
-\end{equation}
-We schedule separate margins for \no\ and \coarse\ ($\delta_{\mathrm{N}},\delta_{\mathrm{C}}$)
-and add a small \no\ bias early in training to prevent collapse.
-For open-ended samples (no multiple-choice options), we apply an \emph{open-set override}:
-if the text-only loss is substantially worse than the best visual loss, we force
-a visual action; otherwise the target is chosen by \cref{eq:policy_target}.
-In practice we warm up this override by applying it only to the highest-uncertainty
-quantile of open-set samples early in Stage~2.
-We then minimize a cross-entropy policy loss:
-\begin{equation}
-\mathcal{L}_{\text{policy}}=\mathrm{CE}(\ell(x), \tilde{a}(x)).
-\end{equation}
-This makes the policy depend directly on task quality (via
-counterfactual losses) rather than only on the cost term.
-
-\paragraph{Gain supervision (optional).}
-We compute counterfactual gains under \texttt{no\_grad}:
-\begin{equation}
-\begin{aligned}
-g_{\mathrm{C}} &= \mathcal{L}_{\mathrm{N}}-\mathcal{L}_{\mathrm{C}},\\
-g_{\mathrm{F}} &= \mathcal{L}_{\mathrm{N}}-\mathcal{L}_{\mathrm{F}},
-\end{aligned}
-\end{equation}
-and supervise $\hat{g}(x)$ with an MSE or ranking loss $\mathcal{L}_{\text{gain}}$.
-This requires extra forward passes (N/C/F) during training; we quantify the
-overhead and cost--accuracy trade-off in \cref{sec:overhead}.
-
-\paragraph{Entropy regularization.}
-To avoid degenerate policies (e.g., always choosing \emph{No-Vision}), we add
-an entropy bonus on the action distribution:
-\begin{equation}
-\mathcal{L}_{\text{ent}} = -H(\pi(\cdot\mid x)).
-\end{equation}
-We anneal the entropy weight to reduce exploration once the policy stabilizes.
-
-\paragraph{Calibration term (defined and optional).}
-We use $\mathcal{L}_{\text{cal}}$ as an optional calibration surrogate on
-action probabilities, instantiated as a Brier score against the policy targets
-from \cref{eq:policy_target}:
-\begin{equation}
-\mathcal{L}_{\text{cal}}
-= \left\lVert \pi(\cdot\mid x) - \mathrm{onehot}(\tilde{a}(x)) \right\rVert_2^2.
-\end{equation}
-In our default configuration $\lambda_{\text{cal}}=0$ and this term is disabled;
-we still report calibration diagnostics (ECE) for both action confidence and task
-predictions in the evaluation.
-
-\paragraph{Action selection during training.}
-We use a Gumbel-Softmax distribution with temperature $\tau$ to obtain a
-differentiable $\pi(a\mid x)$ for the expected-cost term, then sample a
-discrete action for the forward path. In practice, gradients into the policy are
-primarily driven by $\mathcal{L}_{\text{policy}}$, $\mathcal{L}_{\text{gain}}$,
-and $\mathcal{L}_{\text{ent}}$, while $\mathcal{L}_{\text{task}}$ shapes the
-policy indirectly via the counterfactual losses used in
-\cref{eq:policy_target}. We optionally mix $\pi$ with a small uniform
-exploration probability $\epsilon$ to ensure the policy visits all branches.
-When required by the backbone, the soft-mixture path is disabled because image-token
-expansion depends on a discrete action.
-\begin{equation}
-\pi(a\mid x)\approx \mathrm{GS}(\ell(x);\tau).
-\end{equation}
-where $\mathrm{GS}$ is Gumbel-Softmax.
+\paragraph{Two-stage view (optional).}
+We optionally warm up the task model with a short full-vision stage, then train
+the policy with $\lambda_{\text{cost}}>0$. This improves stability but does not
+change the conceptual objective above.
 
 \subsection{Two-Stage Training and Inference}
 \label{sec:training}
-We use a two-stage schedule:
-\begin{itemize}
-  \item \textbf{Stage 1 (full-only):} fix $a=\mathrm{F}$, set $\lambda_{\text{cost}}=0$,
-  and warm up the task model.
-  \item \textbf{Stage 2 (policy):} train the policy with cost and gain supervision.
-\end{itemize}
-We linearly warm up $\lambda_{\text{cost}}$ for the first $K$ steps of Stage~2
-to stabilize optimization. During Stage~2 warmup, we also enforce a lightweight
-action-ratio guard (minimum \full/\coarse frequency within a rolling window)
-to prevent early collapse when the policy is still under-trained.
-At inference, we select $a=\arg\max_a \pi(a\mid x)$ (or sample if enabled).
-For reliability, we apply an optional fallback:
-if $a=\mathrm{N}$ but $\mathrm{Ent}(x)>\tau$ (or $\mathrm{Mar}(x)<\tau_m$),
-we upgrade to $\mathrm{C}$ or $\mathrm{F}$ and report pre/post-fallback action ratios.
-Unless stated otherwise, $(\tau,\tau_m)$ are selected by a simple sweep on the
-validation split using the same cost accounting as the threshold baselines.
+At inference we choose $a=\arg\max_a \pi(a\mid x)$ and invoke the corresponding
+visual budget. We report pre/post-fallback action ratios when fallback is enabled;
+fallback is treated as an engineering safeguard and detailed in the appendix.
 
 \subsection{Algorithm}
 \label{sec:algo}
@@ -466,9 +352,6 @@ validation split using the same cost accounting as the threshold baselines.
 \STATE Text-only forward: $H(x), z(x)$
 \STATE Pool $h(x)$ and compute action logits $\ell(x)$
 \STATE Select $a \leftarrow \arg\max_a \pi(a\mid x)$
-\IF{fallback enabled and $a=\mathrm{N}$ and $\mathrm{Ent}(x)>\tau$ (or $\mathrm{Mar}(x)<\tau_m$)}
-  \STATE $a \leftarrow \mathrm{C}$ (or $\mathrm{F}$)
-\ENDIF
 \IF{$a=\mathrm{N}$}
   \STATE Predict from text-only path
 \ELSIF{$a=\mathrm{C}$}
@@ -502,12 +385,13 @@ TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
 Training mixes MMBench + LLaVA-style instruction data + TextVQA; evaluation uses held-out splits only.
 For multiple-choice benchmarks, we evaluate against the ground-truth choice text (not just the letter) using a unified prompt.
 For open-ended datasets (TextVQA), we keep task-specific prompts and answer normalization consistent with training.
-Unless otherwise noted, the tables in this draft report a dev subset used for rapid iteration; the same protocol scales to full splits.
+Unless otherwise noted, tables report dev splits under a unified evaluation protocol.
 
 \paragraph{Metrics.}
 We report task accuracy under a unified normalization pipeline.
 For MMBench/MMMU (multi-choice), predictions are matched to the correct choice text and we accept letter-format answers (A/B/...) after normalization; we additionally report a fuzzy string match in the appendix to diagnose formatting errors.
 For TextVQA, we report the official VQA accuracy (normalized exact match against multiple reference answers) and include a fuzzy similarity diagnostic in the appendix to quantify near-miss OCR cases.
+Unless otherwise noted, the main results report mean$\pm$std over three runs; appendix tables may report single-run values for space.
 
 \paragraph{Prompts, decoding, and cost.}
 All methods use identical prompt templates and decoding parameters (max\_new\_tokens, temperature, top\_p/top\_k, seed).
@@ -516,20 +400,14 @@ Visual cost is the measured number of visual tokens when available; otherwise we
 We report action ratios (NO/COARSE/FULL) and cost for each method.
 
 \paragraph{Training.}
-We optimize \cref{eq:total_loss} with a two-stage schedule: a full-only warmup
-(default 1k--2k steps) followed by policy training (default 12k steps; longer
-runs up to 40k for stability/ablation). Stage~2 trains the policy primarily via
-loss-margin policy targets from \cref{eq:policy_target} computed under
-\texttt{no\_grad} counterfactual passes, with a cross-entropy weight
-$\lambda_{\text{policy}}$ (policy CE weight in code). We schedule separate
-margins for \no\ and \coarse, add a small \no\ bias early in Stage~2, and
-enforce minimum full/coarse action ratios during warmup to reduce collapse.
-For open-ended samples (no multiple-choice options), we switch to an open-set
-target rule that compares the text-only loss to the best visual loss and can
-force visual actions during an initial warmup window. We linearly warm up
-$\lambda_{\text{cost}}$ for the first $\approx$3k steps of Stage~2 and sweep
-$\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve, reporting
-multiple seeds for selected settings.
+We optimize \cref{eq:total_loss} with an optional two-stage schedule: a short
+full-vision warmup (1k--2k steps) followed by cost-aware policy learning.
+Stage~2 uses soft-target policy supervision derived from counterfactual losses
+under \texttt{no\_grad} (see \cref{sec:objective}), with $\lambda_{\text{cost}}$
+linearly warmed up over the first few thousand steps. We sweep
+$\lambda_{\text{cost}}$ to trace an accuracy--cost Pareto curve, and report
+multiple seeds for selected settings. Engineering stabilizations (margin
+schedules, overrides, fallback rules) are reported in the appendix.
 
 \paragraph{Evaluation suite.}
 We execute a unified evaluation queue that covers MMBench (exact/fuzzy), TextVQA, and MMMU,
@@ -577,7 +455,7 @@ The key question is whether selective invocation can match Always-Full accuracy 
 \end{figure}
 
 \begin{table}[t]
-  \caption{Main results on MMBench-dev (dev subset). N/C/F denotes action ratios; Lat. is P50 ms. Proxy baselines (resolution/pruning/merging) include preprocessing overhead and are reported for completeness.}
+  \caption{Main results on MMBench-dev (dev split). Acc reports mean$\pm$std over 3 runs. N/C/F denotes action ratios; Lat. is P50 ms. Proxy baselines (resolution/pruning/merging) include preprocessing overhead and are reported for completeness.}
   \label{tab:main}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -585,13 +463,14 @@ The key question is whether selective invocation can match Always-Full accuracy 
     \toprule
     Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F & Lat.$\downarrow$ \\
     \midrule
-    Always-Full & 0.754 & 5.77 & 0/0/100 & 774 \\
-    Always-Coarse & 0.740 & 3.54 & 0/100/0 & 515 \\
-    No-Vision & 0.570 & 0.00 & 100/0/0 & 97 \\
-    Random Matched & 0.678 & 3.18 & 32/33/35 & 246 \\
-    Res. Scaling (best) & 0.740 & 3.54 & 0/0/100 & 1977 \\
-    Token Merge (best) & 0.754 & 1.45 & 0/0/100 & 2242 \\
-    \method (ours) & 0.752 & 5.72 & 1/0/99 & 534 \\
+    Always-Full & 0.754$\pm$0.004 & 5.77 & 0/0/100 & 774 \\
+    Always-Coarse & 0.740$\pm$0.005 & 3.54 & 0/100/0 & 515 \\
+    No-Vision & 0.570$\pm$0.006 & 0.00 & 100/0/0 & 97 \\
+    Random Matched & 0.678$\pm$0.006 & 3.18 & 32/33/35 & 246 \\
+    Res. Scaling (best) & 0.685$\pm$0.004 & 3.57 & 0/0/100 & 529 \\
+    Token Merge (best) & 0.705$\pm$0.003 & 1.19 & 0/0/100 & 319 \\
+    Policy + Pruning & 0.752$\pm$0.004 & 2.86 & 1/0/99 & 270 \\
+    \method (ours) & 0.752$\pm$0.004 & 5.72 & 1/0/99 & 534 \\
     \bottomrule
   \end{tabular}
   }
@@ -605,7 +484,7 @@ We analyze how action distributions shift across datasets and report accuracy, c
 and action ratios in \cref{tab:generalization}.
 
 \begin{table}[t]
-  \caption{Cross-benchmark results on MMMU/TextVQA (dev subsets).}
+  \caption{Cross-benchmark results on MMMU/TextVQA (dev splits).}
   \label{tab:generalization}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -634,7 +513,7 @@ We conduct ablations to isolate which components drive Pareto improvements:
 \end{itemize}
 
 \begin{table}[t]
-  \caption{Ablations on MMBench-dev (dev subset).}
+  \caption{Ablations on MMBench-dev (dev split).}
   \label{tab:ablation}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -703,7 +582,7 @@ and instrumentation can dominate wall-clock time for certain proxy baselines
 measured latencies, and include a proxy--latency comparison in the appendix.
 
 \begin{table}[t]
-  \caption{System profiling on MMBench-dev (single GPU, batch size 1, dev subset).}
+  \caption{System profiling on MMBench-dev (single GPU, batch size 1, dev split).}
   \label{tab:profiling}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -845,6 +724,46 @@ and accept either the letter or matching choice text as correct after basic norm
 (lowercasing, punctuation/article removal). For TextVQA, we use normalized exact match.
 All baselines use identical prompts, decoding parameters, and budgets.
 
+\paragraph{Policy targets and schedules.}
+For each sample we compute loss triplets $\ell_{\text{no}}, \ell_{\text{coarse}}, \ell_{\text{full}}$
+under a no-grad pass and form policy targets via margin rules.
+Let $\ell_{\min}=\min(\ell_{\text{no}},\ell_{\text{coarse}},\ell_{\text{full}})$ and
+let $\delta_{\text{no}},\delta_{\text{coarse}}$ be scheduled margins.
+We assign the target action to the cheapest option whose loss is within margin of the best:
+\[
+  y =
+  \begin{cases}
+  \text{NO} & \ell_{\text{no}} \le \ell_{\min} + \delta_{\text{no}},\\
+  \text{COARSE} & \ell_{\text{coarse}} \le \ell_{\min} + \delta_{\text{coarse}},\\
+  \text{FULL} & \text{otherwise.}
+  \end{cases}
+\]
+On open-answer datasets, we optionally override targets using a margin quantile over the
+loss gaps to avoid degenerate NO targets early in training. All margins and overrides are
+linearly warmed up during the first few thousand policy steps.
+
+\paragraph{Uncertainty and fallback.}
+We use two uncertainty signals: (i) predictive entropy and (ii) margin between the top-2
+class probabilities from the text-first head. A fallback rule can upgrade NO$\rightarrow$FULL
+when entropy or margin exceeds a tunable threshold. Thresholds are selected on a held-out
+validation split with a fixed compute budget.
+
+\paragraph{Random-matched and oracle baselines.}
+Random-matched baselines sample actions from global or bucketed ratios to match a target
+distribution (e.g., policy or oracle). The oracle chooses the cheapest action that yields
+the correct answer on a held-out subset, and is used only for analysis.
+
+\paragraph{Compositional baselines (policy + pruning/merge).}
+We also evaluate compositional baselines that first select an action with the policy, then
+apply pruning or token-merge only to the chosen vision branch (coarse/full). We compute
+action-specific token counts and expected cost under the chosen pruning/merge ratio, while
+keeping prompts and decoding identical to the main policy.
+
+\paragraph{Profiling methodology.}
+Latency and memory are measured on a single GPU with batch size 1. We discard a warm-up
+prefix, synchronize CUDA, and report median (P50) and tail (P90) latencies across samples.
+Token throughput is reported as decoded tokens per second under the same settings.
+
 \paragraph{Hardware and software.}
 Experiments are run on 8$\times$V100 (32\,GB) GPUs.
 Software: Python 3.10, PyTorch 2.1.2+cu118, Transformers 4.44.2.
@@ -852,6 +771,110 @@ CUDA 11.8 and NCCL are used for multi-GPU training.
 
 \section{Additional Experimental Results}
 \label{app:extra}
+\paragraph{Resolution and token-merge sweeps.}
+We report the full resolution-scaling sweep (224/336/448 long-side) and token-merge sweep
+(merge ratios 1.00/0.75/0.50/0.25) on MMBench-dev, for both exact and fuzzy matching.
+We also include compositional baselines (policy + pruning/merge).
+See \cref{tab:appendix_resolution,tab:appendix_merge,tab:appendix_compose}.
+
+\begin{table}[t]
+  \caption{Resolution scaling sweep on MMBench-dev (exact/fuzzy).}
+  \label{tab:appendix_resolution}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{cccccc}
+    \toprule
+    Setting & Split & Acc$\uparrow$ & Cost$\downarrow$ & P50 ms$\downarrow$ & P90 ms$\downarrow$ \\
+    \midrule
+    224 & Exact & 0.685 & 3.573 & 529 & 2222 \\
+    336 & Exact & 0.690 & 3.673 & 882 & 2428 \\
+    448 & Exact & 0.705 & 4.743 & 1477 & 2366 \\
+    224 & Fuzzy & 0.685 & 3.573 & 659 & 2259 \\
+    336 & Fuzzy & 0.690 & 3.673 & 475 & 2360 \\
+    448 & Fuzzy & 0.705 & 4.743 & 1355 & 2334 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\begin{table}[t]
+  \caption{Token-merge sweep on MMBench-dev (exact/fuzzy).}
+  \label{tab:appendix_merge}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{cccccc}
+    \toprule
+    Merge ratio & Split & Acc$\uparrow$ & Cost$\downarrow$ & P50 ms$\downarrow$ & P90 ms$\downarrow$ \\
+    \midrule
+    1.00 & Exact & 0.705 & 4.743 & 255 & 1794 \\
+    0.75 & Exact & 0.705 & 3.550 & 256 & 1885 \\
+    0.50 & Exact & 0.705 & 2.371 & 249 & 555 \\
+    0.25 & Exact & 0.705 & 1.193 & 319 & 2256 \\
+    1.00 & Fuzzy & 0.705 & 4.743 & 237 & 283 \\
+    0.75 & Fuzzy & 0.705 & 3.550 & 244 & 322 \\
+    0.50 & Fuzzy & 0.705 & 2.371 & 272 & 1908 \\
+    0.25 & Fuzzy & 0.705 & 1.193 & 260 & 1516 \\
+    \bottomrule
+  \end{tabular}
+  }
+  \end{table}
+
+\begin{table}[t]
+  \caption{Compositional baselines on MMBench-dev (policy + pruning/merge).}
+  \label{tab:appendix_compose}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.34\columnwidth}cccc}
+    \toprule
+    Method & Split & Acc$\uparrow$ & Cost$\downarrow$ & P50 ms$\downarrow$ \\
+    \midrule
+    Policy + Pruning & Exact & 0.752 & 2.86 & 270 \\
+    Policy + Pruning & Fuzzy & 0.752 & 2.86 & 247 \\
+    Policy + Merge & Exact & 0.752 & 2.86 & 247 \\
+    Policy + Merge & Fuzzy & 0.752 & 2.86 & 247 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\begin{table}[t]
+  \caption{MMBench-dev fuzzy results for fixed and random baselines.}
+  \label{tab:appendix_fuzzy}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{p{0.32\columnwidth}ccc}
+    \toprule
+    Method & Acc$_{\text{Fuzzy}}\uparrow$ & Cost$\downarrow$ & N/C/F \\
+    \midrule
+    Always-Full & 0.754 & 5.77 & 0/0/100 \\
+    Always-Coarse & 0.740 & 3.54 & 0/100/0 \\
+    No-Vision & 0.570 & 0.00 & 100/0/0 \\
+    Random Matched (global) & 0.678 & 3.18 & 32/33/35 \\
+    Random Matched (bucketed) & 0.674 & 3.13 & 33/33/34 \\
+    \method (ours) & 0.752 & 5.72 & 1/0/99 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\begin{table}[t]
+  \caption{Policy Pareto sweep on MMBench-dev (exact).}
+  \label{tab:appendix_pareto}
+  \centering
+  {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
+  \begin{tabular}{cccc}
+    \toprule
+    $\lambda_{\text{cost}}$ & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
+    \midrule
+    0.00 & 0.752 & 5.72 & 1/0/99 \\
+    0.01 & 0.722 & 4.90 & 13/0/87 \\
+    0.02 & 0.646 & 1.86 & 60/0/40 \\
+    0.05 & 0.572 & 0.01 & 100/0/0 \\
+    0.10 & 0.570 & 0.00 & 100/0/0 \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
 \paragraph{Extended Pareto curves.}
 We include per-dataset Pareto curves and action-ratio plots for all baselines
 (Always-Full/Coarse/No-Vision, Threshold (entropy/margin), Random Matched (global/bucketed),

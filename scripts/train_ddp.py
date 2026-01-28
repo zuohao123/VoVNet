@@ -1041,6 +1041,29 @@ def main() -> None:
                         if actions is None and cfg.policy.policy_target_mode != "none":
                             loss_triplet = outputs.get("loss_triplet")
                             if loss_triplet is not None:
+                                # Cost-aware targets: penalize expensive actions in the triplet
+                                # using the same cost scale as expected_cost.
+                                token_count_coarse = outputs.get("token_count_coarse")
+                                token_count_full = outputs.get("token_count_full")
+                                if (
+                                    token_count_coarse is not None
+                                    and token_count_full is not None
+                                    and float(lambda_cost) > 0.0
+                                ):
+                                    raw_model = model.module if hasattr(model, "module") else model
+                                    cost_scale = float(getattr(raw_model, "cost_scale", 1.0))
+                                    zeros = torch.zeros_like(token_count_coarse)
+                                    cost_triplet = torch.stack(
+                                        [zeros, token_count_coarse, token_count_full], dim=-1
+                                    )
+                                    loss_scale = (
+                                        loss_triplet.detach()
+                                        .mean(dim=-1, keepdim=True)
+                                        .clamp(min=1e-6)
+                                    )
+                                    loss_triplet = loss_triplet + cost_triplet * cost_scale * float(
+                                        lambda_cost
+                                    ) * loss_scale
                                 delta_no_start = (
                                     cfg.policy.policy_delta_no_start
                                     if cfg.policy.policy_delta_no_start is not None
