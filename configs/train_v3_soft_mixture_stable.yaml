@@ -11,12 +11,12 @@ training:
 policy:
   policy_target_mode: none
   policy_ce_weight: 0.0
-  action_temperature: 3.0
-  entropy_weight: 0.2
-  lambda_cost: 0.002
+  action_temperature: 5.0
+  entropy_weight: 0.5
+  lambda_cost: 0.005
   cost_normalize: true
   mixture_branches: NCF_subsample
-  mixture_subsample_every: 16
+  mixture_subsample_every: 8
 
 vision_budget:
   coarse_budget_mode: half
