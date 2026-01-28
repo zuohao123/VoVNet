@@ -370,13 +370,17 @@ class Config:
                 "token_merge",
                 "multi_granularity_proxy",
                 "resolution_scaling",
+                "policy_pruning",
+                "policy_merge",
+                "policy_merge_prune",
                 "none",
                 "null",
             }:
                 raise ValueError(
                     "baseline_name must be always_full, always_coarse, no_vision, "
                     "uncertainty_threshold, random_policy_matched, vision_token_pruning_proxy, "
-                    "token_merge_prune_proxy, multi_granularity_proxy, resolution_scaling, or null"
+                    "token_merge_prune_proxy, multi_granularity_proxy, resolution_scaling, "
+                    "policy_pruning, policy_merge, or null"
                 )
         uncertainty = self.policy.baseline_uncertainty.strip().lower()
         if uncertainty not in {"entropy", "margin"}:
@@ -407,14 +411,24 @@ class Config:
                         raise ValueError("baseline_bucket_thresholds must have 2 values")
                     if thresholds[0] >= thresholds[1]:
                         raise ValueError("baseline_bucket_thresholds must be increasing")
-            if normalized in {"vision_token_pruning_proxy", "pruning_proxy", "vision_pruning"}:
+            if normalized in {
+                "vision_token_pruning_proxy",
+                "pruning_proxy",
+                "vision_pruning",
+                "policy_pruning",
+            }:
                 ratio = float(self.policy.baseline_pruning_ratio)
                 if ratio <= 0.0 or ratio > 1.0:
                     raise ValueError("baseline_pruning_ratio must be in (0, 1]")
                 mode = self.policy.baseline_pruning_mode.strip().lower()
                 if mode not in {"stride", "topk_norm", "topk"}:
                     raise ValueError("baseline_pruning_mode must be stride or topk_norm")
-            if normalized in {"token_merge_prune_proxy", "token_merge"}:
+            if normalized in {
+                "token_merge_prune_proxy",
+                "token_merge",
+                "policy_merge",
+                "policy_merge_prune",
+            }:
                 merge_ratio = float(self.policy.baseline_merge_ratio)
                 if merge_ratio <= 0.0 or merge_ratio > 1.0:
                     raise ValueError("baseline_merge_ratio must be in (0, 1]")

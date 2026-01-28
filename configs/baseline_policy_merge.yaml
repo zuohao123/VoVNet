@@ -1,0 +1,8 @@
+policy:
+  baseline_name: "policy_merge"
+  baseline_merge_ratio: 0.5
+  baseline_merge_mode: "cosine"
+  baseline_merge_weight: "norm"
+  baseline_enable_prune: false
+  baseline_prune_ratio: 1.0
+  baseline_prune_mode: "topk_norm"

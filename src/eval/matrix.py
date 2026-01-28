@@ -23,7 +23,7 @@ from src.data.collate import VLMDataCollator
 from src.eval.matrix_spec import EvalDatasetSpec, build_dataset, get_metric_fn
 from src.models.base_vlm import BaseVLM, VisionPruningSpec
 from src.models.uncertainty import expected_calibration_error
-from src.models.vovnet import Action, VoVNet
+from src.models.vovnet import Action, VoVNet, VisionInputs
 from src.models.vision_budget import VisionBudgetController
 from src.utils.profiling import BatchProfiler
 
@@ -204,6 +204,23 @@ def _align_grid_to_token_counts(
         new_grid[i, 2] = max(1, w)
         new_counts[i] = t * new_grid[i, 1] * new_grid[i, 2]
     return new_grid, new_counts
+
+
+def _slice_vision_inputs(inputs: Optional["VisionInputs"], idx: int) -> Optional["VisionInputs"]:
+    if inputs is None:
+        return None
+    return VisionInputs(
+        pixel_values=inputs.pixel_values[idx : idx + 1] if torch.is_tensor(inputs.pixel_values) else None,
+        token_counts=inputs.token_counts[idx : idx + 1],
+        image_grid_thw=(
+            inputs.image_grid_thw[idx : idx + 1] if torch.is_tensor(inputs.image_grid_thw) else None
+        ),
+        input_ids=inputs.input_ids[idx : idx + 1] if torch.is_tensor(inputs.input_ids) else None,
+        attention_mask=(
+            inputs.attention_mask[idx : idx + 1] if torch.is_tensor(inputs.attention_mask) else None
+        ),
+        labels=inputs.labels[idx : idx + 1] if torch.is_tensor(inputs.labels) else None,
+    )
 
 
 def _forward_with_cost(
@@ -506,6 +523,479 @@ def _forward_with_token_merge_prune_proxy(
         "remaining_vision_tokens": final_counts.float(),
         "action_label": "MERGE_PROXY_FULL",
         "labels": full_inputs.labels if full_inputs is not None else text_labels,
+        "merge_ratio": float(merge_ratio),
+        "prune_ratio": float(prune_ratio) if enable_prune else 1.0,
+        "merge_mode": merge_mode,
+        "merge_weight": merge_weight,
+        "enable_prune": bool(enable_prune),
+        "prune_mode": prune_mode,
+    }
+
+
+def _forward_with_policy_pruning(
+    model: VoVNet,
+    batch: Dict[str, Any],
+    pruning_ratio: float,
+    pruning_mode: str,
+    cost_weight: Optional[float],
+) -> Dict[str, Any]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    if images is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight)
+        outputs["action_label"] = "POLICY_PRUNING_TEXT_ONLY"
+        return outputs
+
+    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    if coarse_inputs is None or full_inputs is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight)
+        outputs["action_label"] = "POLICY_PRUNING_TEXT_ONLY"
+        return outputs
+
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
+    text_outputs, action_logits, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
+    if cost_weight is not None:
+        zeros = torch.zeros_like(token_count_coarse)
+        costs = torch.stack([zeros, token_count_coarse, token_count_full], dim=-1)
+        costs = costs * float(getattr(raw_model, "cost_scale", 1.0))
+        action_logits = action_logits - float(cost_weight) * costs
+
+    _, actions = raw_model._select_actions(action_logits)
+    uncertainty = raw_model._compute_uncertainty(text_outputs)
+    margin = raw_model._compute_margin(text_outputs)
+    if not raw_model.training and images is not None:
+        actions, _, _, _ = raw_model._apply_fallback(actions, uncertainty, margin)
+
+    base_model = raw_model.base_vlm
+    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+    keep_counts_coarse = base_model.compute_pruned_counts(
+        token_count_coarse, pruning_ratio
+    ).to(device=text_input_ids.device, dtype=torch.long)
+    keep_counts_full = full_model.compute_pruned_counts(
+        token_count_full, pruning_ratio
+    ).to(device=text_input_ids.device, dtype=torch.long)
+
+    prune_spec_coarse = VisionPruningSpec(
+        ratio=float(pruning_ratio),
+        mode=pruning_mode,
+        min_tokens=1,
+        keep_counts=keep_counts_coarse,
+        pad_to_length=True,
+    )
+    prune_spec_full = VisionPruningSpec(
+        ratio=float(pruning_ratio),
+        mode=pruning_mode,
+        min_tokens=1,
+        keep_counts=keep_counts_full,
+        pad_to_length=True,
+    )
+
+    unique_actions = actions.unique().tolist()
+    if len(unique_actions) == 1:
+        action = unique_actions[0]
+        if action == Action.NO_VISION:
+            logits = text_outputs.logits
+            vision_tokens = torch.zeros_like(actions, dtype=torch.float)
+            labels = text_labels
+        else:
+            mode = "coarse" if action == Action.COARSE_VISION else "full"
+            vision_inputs = coarse_inputs if mode == "coarse" else full_inputs
+            vision_pruning = prune_spec_coarse if mode == "coarse" else prune_spec_full
+            logits, _ = raw_model._forward_mode(
+                input_ids=text_input_ids,
+                attention_mask=text_attention_mask,
+                images=images,
+                text_outputs=text_outputs,
+                mode=mode,
+                vision_inputs=vision_inputs,
+                vision_pruning=vision_pruning,
+            )
+            vision_tokens = (
+                keep_counts_coarse.float()
+                if mode == "coarse"
+                else keep_counts_full.float()
+            )
+            labels = (
+                coarse_inputs.labels
+                if mode == "coarse"
+                else full_inputs.labels
+            )
+        action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+        expected_cost = raw_model._compute_expected_cost(
+            action_probs, keep_counts_coarse.float(), keep_counts_full.float()
+        )
+        return {
+            "logits": logits,
+            "actions": actions,
+            "expected_cost": expected_cost,
+            "vision_tokens": vision_tokens,
+            "remaining_vision_tokens": vision_tokens,
+            "action_label": "POLICY_PRUNING",
+            "labels": labels,
+        }
+
+    logits_list: List[torch.Tensor] = []
+    token_counts: List[int] = []
+    label_list: Optional[List[torch.Tensor]] = [] if text_labels is not None else None
+    for idx, action in enumerate(actions.tolist()):
+        if action == Action.NO_VISION:
+            logits_list.append(text_outputs.logits[idx : idx + 1])
+            token_counts.append(0)
+            if label_list is not None and text_labels is not None:
+                label_list.append(text_labels[idx : idx + 1])
+            continue
+
+        if action == Action.COARSE_VISION:
+            vi = _slice_vision_inputs(coarse_inputs, idx)
+            input_ids_row = (
+                vi.input_ids if vi is not None and vi.input_ids is not None else text_input_ids[idx : idx + 1]
+            )
+            attention_mask_row = (
+                vi.attention_mask
+                if vi is not None and vi.attention_mask is not None
+                else text_attention_mask[idx : idx + 1]
+            )
+            pixel_values = vi.pixel_values if vi is not None else None
+            image_grid_thw = vi.image_grid_thw if vi is not None else None
+            keep_counts = keep_counts_coarse[idx : idx + 1]
+            vision_pruning = VisionPruningSpec(
+                ratio=float(pruning_ratio),
+                mode=pruning_mode,
+                min_tokens=1,
+                keep_counts=keep_counts,
+                pad_to_length=True,
+            )
+            outputs = base_model.forward_with_vision(
+                input_ids=input_ids_row,
+                attention_mask=attention_mask_row,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                past_key_values=None,
+                vision_pruning=vision_pruning,
+            )
+            logits_list.append(outputs.logits)
+            token_counts.append(int(keep_counts.item()))
+            if label_list is not None:
+                label_list.append(
+                    vi.labels if vi is not None and vi.labels is not None else text_labels[idx : idx + 1]
+                )
+            continue
+
+        vi = _slice_vision_inputs(full_inputs, idx)
+        input_ids_row = (
+            vi.input_ids if vi is not None and vi.input_ids is not None else text_input_ids[idx : idx + 1]
+        )
+        attention_mask_row = (
+            vi.attention_mask
+            if vi is not None and vi.attention_mask is not None
+            else text_attention_mask[idx : idx + 1]
+        )
+        pixel_values = vi.pixel_values if vi is not None else None
+        image_grid_thw = vi.image_grid_thw if vi is not None else None
+        keep_counts = keep_counts_full[idx : idx + 1]
+        vision_pruning = VisionPruningSpec(
+            ratio=float(pruning_ratio),
+            mode=pruning_mode,
+            min_tokens=1,
+            keep_counts=keep_counts,
+            pad_to_length=True,
+        )
+        outputs = full_model.forward_with_vision(
+            input_ids=input_ids_row,
+            attention_mask=attention_mask_row,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            past_key_values=None,
+            vision_pruning=vision_pruning,
+        )
+        logits_list.append(outputs.logits)
+        token_counts.append(int(keep_counts.item()))
+        if label_list is not None:
+            label_list.append(
+                vi.labels if vi is not None and vi.labels is not None else text_labels[idx : idx + 1]
+            )
+
+    logits = torch.cat(logits_list, dim=0)
+    vision_tokens = torch.tensor(token_counts, device=logits.device, dtype=torch.float)
+    labels = torch.cat(label_list, dim=0) if label_list is not None else None
+    action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, keep_counts_coarse.float(), keep_counts_full.float()
+    )
+    return {
+        "logits": logits,
+        "actions": actions,
+        "expected_cost": expected_cost,
+        "vision_tokens": vision_tokens,
+        "remaining_vision_tokens": vision_tokens,
+        "action_label": "POLICY_PRUNING",
+        "labels": labels,
+    }
+
+
+def _forward_with_policy_merge(
+    model: VoVNet,
+    batch: Dict[str, Any],
+    merge_ratio: float,
+    merge_mode: str,
+    merge_weight: str,
+    enable_prune: bool,
+    prune_ratio: float,
+    prune_mode: str,
+    cost_weight: Optional[float],
+) -> Dict[str, Any]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    if images is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight)
+        outputs["action_label"] = "POLICY_MERGE_TEXT_ONLY"
+        return outputs
+
+    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["input_ids"].device,
+            batch_size=batch["input_ids"].size(0),
+        )
+    )
+    if coarse_inputs is None or full_inputs is None:
+        outputs = _forward_with_cost(raw_model, batch, cost_weight)
+        outputs["action_label"] = "POLICY_MERGE_TEXT_ONLY"
+        return outputs
+
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
+    text_outputs, action_logits, _ = raw_model.text_first(
+        input_ids=text_input_ids, attention_mask=text_attention_mask
+    )
+    if cost_weight is not None:
+        zeros = torch.zeros_like(token_count_coarse)
+        costs = torch.stack([zeros, token_count_coarse, token_count_full], dim=-1)
+        costs = costs * float(getattr(raw_model, "cost_scale", 1.0))
+        action_logits = action_logits - float(cost_weight) * costs
+
+    _, actions = raw_model._select_actions(action_logits)
+    uncertainty = raw_model._compute_uncertainty(text_outputs)
+    margin = raw_model._compute_margin(text_outputs)
+    if not raw_model.training and images is not None:
+        actions, _, _, _ = raw_model._apply_fallback(actions, uncertainty, margin)
+
+    base_model = raw_model.base_vlm
+    full_model = raw_model.full_vlm if raw_model.full_vlm is not None else raw_model.base_vlm
+
+    merge_counts_coarse = base_model.compute_pruned_counts(
+        token_count_coarse, merge_ratio
+    ).to(device=text_input_ids.device, dtype=torch.long)
+    merge_counts_full = full_model.compute_pruned_counts(
+        token_count_full, merge_ratio
+    ).to(device=text_input_ids.device, dtype=torch.long)
+
+    final_counts_coarse = merge_counts_coarse
+    final_counts_full = merge_counts_full
+    if enable_prune:
+        final_counts_coarse = base_model.compute_pruned_counts(
+            merge_counts_coarse, prune_ratio
+        ).to(device=text_input_ids.device, dtype=torch.long)
+        final_counts_full = full_model.compute_pruned_counts(
+            merge_counts_full, prune_ratio
+        ).to(device=text_input_ids.device, dtype=torch.long)
+
+    merge_spec_coarse = VisionPruningSpec(
+        ratio=float(merge_ratio),
+        mode=f"merge_{merge_mode}",
+        min_tokens=1,
+        keep_counts=merge_counts_coarse,
+        enable_prune=bool(enable_prune),
+        prune_ratio=float(prune_ratio),
+        prune_mode=prune_mode,
+        merge_weight=merge_weight,
+        pad_to_length=True,
+    )
+    merge_spec_full = VisionPruningSpec(
+        ratio=float(merge_ratio),
+        mode=f"merge_{merge_mode}",
+        min_tokens=1,
+        keep_counts=merge_counts_full,
+        enable_prune=bool(enable_prune),
+        prune_ratio=float(prune_ratio),
+        prune_mode=prune_mode,
+        merge_weight=merge_weight,
+        pad_to_length=True,
+    )
+
+    unique_actions = actions.unique().tolist()
+    if len(unique_actions) == 1:
+        action = unique_actions[0]
+        if action == Action.NO_VISION:
+            logits = text_outputs.logits
+            vision_tokens = torch.zeros_like(actions, dtype=torch.float)
+            labels = text_labels
+        else:
+            mode = "coarse" if action == Action.COARSE_VISION else "full"
+            vision_inputs = coarse_inputs if mode == "coarse" else full_inputs
+            vision_pruning = merge_spec_coarse if mode == "coarse" else merge_spec_full
+            logits, _ = raw_model._forward_mode(
+                input_ids=text_input_ids,
+                attention_mask=text_attention_mask,
+                images=images,
+                text_outputs=text_outputs,
+                mode=mode,
+                vision_inputs=vision_inputs,
+                vision_pruning=vision_pruning,
+            )
+            vision_tokens = (
+                final_counts_coarse.float()
+                if mode == "coarse"
+                else final_counts_full.float()
+            )
+            labels = (
+                coarse_inputs.labels
+                if mode == "coarse"
+                else full_inputs.labels
+            )
+        action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+        expected_cost = raw_model._compute_expected_cost(
+            action_probs, final_counts_coarse.float(), final_counts_full.float()
+        )
+        return {
+            "logits": logits,
+            "actions": actions,
+            "expected_cost": expected_cost,
+            "vision_tokens": vision_tokens,
+            "remaining_vision_tokens": vision_tokens,
+            "action_label": "POLICY_MERGE",
+            "labels": labels,
+            "merge_ratio": float(merge_ratio),
+            "prune_ratio": float(prune_ratio) if enable_prune else 1.0,
+            "merge_mode": merge_mode,
+            "merge_weight": merge_weight,
+            "enable_prune": bool(enable_prune),
+            "prune_mode": prune_mode,
+        }
+
+    logits_list: List[torch.Tensor] = []
+    token_counts: List[int] = []
+    label_list: Optional[List[torch.Tensor]] = [] if text_labels is not None else None
+    for idx, action in enumerate(actions.tolist()):
+        if action == Action.NO_VISION:
+            logits_list.append(text_outputs.logits[idx : idx + 1])
+            token_counts.append(0)
+            if label_list is not None and text_labels is not None:
+                label_list.append(text_labels[idx : idx + 1])
+            continue
+
+        if action == Action.COARSE_VISION:
+            vi = _slice_vision_inputs(coarse_inputs, idx)
+            input_ids_row = (
+                vi.input_ids if vi is not None and vi.input_ids is not None else text_input_ids[idx : idx + 1]
+            )
+            attention_mask_row = (
+                vi.attention_mask
+                if vi is not None and vi.attention_mask is not None
+                else text_attention_mask[idx : idx + 1]
+            )
+            pixel_values = vi.pixel_values if vi is not None else None
+            image_grid_thw = vi.image_grid_thw if vi is not None else None
+            keep_counts = merge_counts_coarse[idx : idx + 1]
+            vision_pruning = VisionPruningSpec(
+                ratio=float(merge_ratio),
+                mode=f"merge_{merge_mode}",
+                min_tokens=1,
+                keep_counts=keep_counts,
+                enable_prune=bool(enable_prune),
+                prune_ratio=float(prune_ratio),
+                prune_mode=prune_mode,
+                merge_weight=merge_weight,
+                pad_to_length=True,
+            )
+            outputs = base_model.forward_with_vision(
+                input_ids=input_ids_row,
+                attention_mask=attention_mask_row,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                past_key_values=None,
+                vision_pruning=vision_pruning,
+            )
+            logits_list.append(outputs.logits)
+            token_counts.append(int(final_counts_coarse[idx].item()))
+            if label_list is not None:
+                label_list.append(
+                    vi.labels if vi is not None and vi.labels is not None else text_labels[idx : idx + 1]
+                )
+            continue
+
+        vi = _slice_vision_inputs(full_inputs, idx)
+        input_ids_row = (
+            vi.input_ids if vi is not None and vi.input_ids is not None else text_input_ids[idx : idx + 1]
+        )
+        attention_mask_row = (
+            vi.attention_mask
+            if vi is not None and vi.attention_mask is not None
+            else text_attention_mask[idx : idx + 1]
+        )
+        pixel_values = vi.pixel_values if vi is not None else None
+        image_grid_thw = vi.image_grid_thw if vi is not None else None
+        keep_counts = merge_counts_full[idx : idx + 1]
+        vision_pruning = VisionPruningSpec(
+            ratio=float(merge_ratio),
+            mode=f"merge_{merge_mode}",
+            min_tokens=1,
+            keep_counts=keep_counts,
+            enable_prune=bool(enable_prune),
+            prune_ratio=float(prune_ratio),
+            prune_mode=prune_mode,
+            merge_weight=merge_weight,
+            pad_to_length=True,
+        )
+        outputs = full_model.forward_with_vision(
+            input_ids=input_ids_row,
+            attention_mask=attention_mask_row,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            past_key_values=None,
+            vision_pruning=vision_pruning,
+        )
+        logits_list.append(outputs.logits)
+        token_counts.append(int(final_counts_full[idx].item()))
+        if label_list is not None:
+            label_list.append(
+                vi.labels if vi is not None and vi.labels is not None else text_labels[idx : idx + 1]
+            )
+
+    logits = torch.cat(logits_list, dim=0)
+    vision_tokens = torch.tensor(token_counts, device=logits.device, dtype=torch.float)
+    labels = torch.cat(label_list, dim=0) if label_list is not None else None
+    action_probs = F.one_hot(actions, num_classes=len(Action)).float()
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, final_counts_coarse.float(), final_counts_full.float()
+    )
+    return {
+        "logits": logits,
+        "actions": actions,
+        "expected_cost": expected_cost,
+        "vision_tokens": vision_tokens,
+        "remaining_vision_tokens": vision_tokens,
+        "action_label": "POLICY_MERGE",
+        "labels": labels,
         "merge_ratio": float(merge_ratio),
         "prune_ratio": float(prune_ratio) if enable_prune else 1.0,
         "merge_mode": merge_mode,
@@ -874,6 +1364,28 @@ def evaluate_dataset(
                     bucket_ratios=baseline_bucket_ratios,
                     bucket_thresholds=bucket_thresholds,
                     generator=generator if generator is not None else torch.Generator(),
+                )
+                action_label = outputs.get("action_label")
+            elif baseline_name == "policy_pruning":
+                outputs = _forward_with_policy_pruning(
+                    raw_model,
+                    batch,
+                    pruning_ratio=baseline_pruning_ratio,
+                    pruning_mode=baseline_pruning_mode,
+                    cost_weight=cost_weight,
+                )
+                action_label = outputs.get("action_label")
+            elif baseline_name == "policy_merge":
+                outputs = _forward_with_policy_merge(
+                    raw_model,
+                    batch,
+                    merge_ratio=baseline_merge_ratio,
+                    merge_mode=baseline_merge_mode,
+                    merge_weight=baseline_merge_weight,
+                    enable_prune=baseline_enable_prune,
+                    prune_ratio=baseline_prune_ratio,
+                    prune_mode=baseline_prune_mode,
+                    cost_weight=cost_weight,
                 )
                 action_label = outputs.get("action_label")
             elif baseline_name:

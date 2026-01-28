@@ -585,16 +585,13 @@ The key question is whether selective invocation can match Always-Full accuracy 
     \toprule
     Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F & Lat.$\downarrow$ \\
     \midrule
-    Always-Full & 0.858 & 5.77 & 0/0/100 & 248 \\
-    Always-Coarse & 0.830 & 3.54 & 0/100/0 & 230 \\
-    No-Vision & 0.628 & 0.00 & 100/0/0 & 117 \\
-    Threshold (best) & 0.818 & 3.10 & 12/45/43 & 238 \\
-    Random Matched & 0.760 & 3.00 & 30/35/35 & 235 \\
-    Res. Scaling (best) & 0.845 & 3.54 & 0/0/100 & 260 \\
-    Token Pruning (best) & 0.842 & 3.00 & 0/0/100 & 268 \\
-    Token Merge (best) & 0.836 & 2.60 & 0/0/100 & 275 \\
-    Multi-Gran. (best) & 0.844 & 2.70 & 0/0/100 & 270 \\
-    \method (ours) & 0.838 & 5.11 & 8/17/75 & 247 \\
+    Always-Full & 0.754 & 5.77 & 0/0/100 & 774 \\
+    Always-Coarse & 0.740 & 3.54 & 0/100/0 & 515 \\
+    No-Vision & 0.570 & 0.00 & 100/0/0 & 97 \\
+    Random Matched & 0.678 & 3.18 & 32/33/35 & 246 \\
+    Res. Scaling (best) & 0.740 & 3.54 & 0/0/100 & 1977 \\
+    Token Merge (best) & 0.754 & 1.45 & 0/0/100 & 2242 \\
+    \method (ours) & 0.752 & 5.72 & 1/0/99 & 534 \\
     \bottomrule
   \end{tabular}
   }
@@ -616,10 +613,10 @@ and action ratios in \cref{tab:generalization}.
     \toprule
     Dataset & Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
     \midrule
-    MMMU & \method & 0.32 & 2.10 & 30/20/50 \\
-    MMMU & Always-Full & 0.34 & 4.74 & 0/0/100 \\
-    TextVQA & \method & 0.037 & 3.50 & 0/100/0 \\
-    TextVQA & Always-Full & 0.038 & 6.94 & 0/0/100 \\
+    MMMU & \method & 0.128 & 0.06 & 98/0/2 \\
+    MMMU & Always-Full & 0.204 & 3.20 & 0/0/100 \\
+    TextVQA & \method & 0.0347 & 0.00 & 100/0/0 \\
+    TextVQA & Always-Full & 0.0333 & 6.94 & 0/0/100 \\
     \bottomrule
   \end{tabular}
   }
@@ -651,7 +648,7 @@ We conduct ablations to isolate which components drive Pareto improvements:
     Soft mixing & 0.820 & 4.80 & 15/30/55 \\
     Gumbel-ST & 0.838 & 5.11 & 8/17/75 \\
     Binary actions & 0.830 & 4.20 & 25/0/75 \\
-    $\lambda_{\text{cost}}=0$ & 0.858 & 5.77 & 0/0/100 \\
+    $\lambda_{\text{cost}}=0$ & 0.754 & 5.77 & 0/0/100 \\
     \bottomrule
   \end{tabular}
   }
@@ -714,9 +711,9 @@ measured latencies, and include a proxy--latency comparison in the appendix.
     \toprule
     Method & P50$\downarrow$ & P90$\downarrow$ & Mem$\downarrow$ & Tok/s$\uparrow$ \\
     \midrule
-    Always-Full & 248 & 274 & 17238 & 314 \\
-    Always-Coarse & 230 & 252 & 17075 & 220 \\
-    \method (ours) & 247 & 272 & 17180 & 335 \\
+    Always-Full & 774 & 2321 & 17238 & 173 \\
+    Always-Coarse & 515 & 2433 & 17238 & 158 \\
+    \method (ours) & 534 & 2484 & 17183 & 181 \\
     \bottomrule
   \end{tabular}
   }

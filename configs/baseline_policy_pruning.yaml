@@ -1,0 +1,4 @@
+policy:
+  baseline_name: "policy_pruning"
+  baseline_pruning_ratio: 0.5
+  baseline_pruning_mode: "stride"

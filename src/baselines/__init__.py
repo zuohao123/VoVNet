@@ -29,6 +29,9 @@ _BASELINE_ALIASES = {
     "token_merge_prune_proxy": "token_merge_prune_proxy",
     "token_merge": "token_merge_prune_proxy",
     "multi_granularity_proxy": "multi_granularity_proxy",
+    "policy_pruning": "policy_pruning",
+    "policy_merge": "policy_merge",
+    "policy_merge_prune": "policy_merge",
 }
 
 _BASELINE_LABELS = {
