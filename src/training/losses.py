@@ -22,6 +22,25 @@ def compute_task_loss(logits: Tensor, labels: Tensor | None) -> Tensor:
     return loss
 
 
+def compute_task_loss_per_sample(logits: Tensor, labels: Tensor | None) -> Tensor:
+    """Compute per-sample token-level cross entropy loss (mean over valid tokens)."""
+    if labels is None:
+        return logits.new_zeros(logits.shape[0])
+    if not labels.ne(-100).any():
+        return logits.new_zeros(labels.shape[0])
+    vocab_size = logits.shape[-1]
+    loss = F.cross_entropy(
+        logits.view(-1, vocab_size),
+        labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    )
+    loss = loss.view(labels.shape)
+    mask = labels.ne(-100).float()
+    denom = mask.sum(dim=1).clamp(min=1.0)
+    return (loss * mask).sum(dim=1) / denom
+
+
 def compute_cost_loss(expected_cost: Tensor, lambda_cost: float) -> Tensor:
     """Compute expected cost penalty."""
     return expected_cost.mean() * lambda_cost

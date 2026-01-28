@@ -1,6 +1,7 @@
 """Vision budget controls for coarse and full modes."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -17,6 +18,24 @@ class VisionBudgetController:
     full_max_pixels: int
     patch_size: int = 14
     token_cap: Optional[int] = None
+    coarse_ratio: Optional[float] = None
+    coarse_budget_mode: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        ratio = self.coarse_ratio
+        if ratio is None and self.coarse_budget_mode is not None:
+            mode = str(self.coarse_budget_mode).strip().lower()
+            if mode == "half":
+                ratio = 0.5
+            elif mode == "quarter":
+                ratio = 0.25
+        if ratio is None:
+            return
+        ratio = float(ratio)
+        ratio = max(1e-6, min(1.0, ratio))
+        scale = math.sqrt(ratio)
+        self.coarse_long_side = max(1, int(round(self.full_long_side * scale)))
+        self.coarse_max_pixels = max(1, int(self.full_max_pixels * ratio))
 
     def prepare_image(self, image: Image.Image, mode: str) -> Image.Image:
         """Resize the image according to the chosen mode."""

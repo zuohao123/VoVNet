@@ -31,7 +31,12 @@ from src.models.base_vlm import BaseVLM
 from src.models.uncertainty import expected_calibration_error
 from src.models.vision_budget import VisionBudgetController
 from src.models.vovnet import Action, VoVNet
-from src.training.losses import compute_policy_targets, compute_total_loss
+from src.training.losses import (
+    compute_entropy_loss,
+    compute_policy_targets,
+    compute_task_loss_per_sample,
+    compute_total_loss,
+)
 from src.training.schedulers import build_scheduler
 from src.training.trainer import _compute_ece, _format_budget, _format_duration
 from src.utils.logging import setup_logging
@@ -567,6 +572,147 @@ def _log_step(
     )
 
 
+def _soft_mixture_forward(
+    model: nn.Module,
+    batch: Dict[str, Any],
+    *,
+    lambda_cost: float,
+    lambda_entropy: float,
+    action_temperature: float,
+    cost_normalize: bool,
+    mixture_branches: str,
+    mixture_subsample_every: int,
+    step_idx: int,
+) -> tuple[Dict[str, Any], Dict[str, torch.Tensor]]:
+    raw_model = getattr(model, "module", model)
+    images = batch.get("images")
+    token_count_coarse, token_count_full, coarse_inputs, full_inputs = (
+        raw_model._prepare_token_counts(
+            images=images,
+            device=batch["attention_mask"].device,
+            batch_size=batch["attention_mask"].shape[0],
+        )
+        if images is not None
+        else (
+            torch.zeros_like(batch["attention_mask"][:, 0]),
+            torch.zeros_like(batch["attention_mask"][:, 0]),
+            None,
+            None,
+        )
+    )
+    text_input_ids, text_attention_mask, text_labels = raw_model._prepare_text_and_vision_inputs(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        labels=batch.get("labels"),
+        coarse_inputs=coarse_inputs,
+        full_inputs=full_inputs,
+    )
+    text_outputs, action_logits, _ = raw_model.text_first(
+        text_input_ids, text_attention_mask
+    )
+    temperature = max(float(action_temperature), 1e-6)
+    action_probs = torch.softmax(action_logits / temperature, dim=-1)
+
+    compute_coarse = True
+    compute_full = True
+    if mixture_branches == "NF":
+        compute_coarse = False
+    elif mixture_branches == "NCF_subsample":
+        interval = max(0, int(mixture_subsample_every))
+        if interval > 0 and (step_idx % interval != 0):
+            # Skip the most expensive branch on non-interval steps.
+            compute_full = False
+
+    if not compute_coarse or not compute_full:
+        action_probs = action_probs.clone()
+        if not compute_coarse:
+            action_probs[:, Action.COARSE_VISION] = 0.0
+        if not compute_full:
+            action_probs[:, Action.FULL_VISION] = 0.0
+        action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+
+    logits_no = text_outputs.logits
+    labels_no = text_labels
+    loss_no = compute_task_loss_per_sample(logits_no, labels_no)
+
+    logits_coarse = logits_no
+    labels_coarse = labels_no
+    loss_coarse = loss_no
+    if compute_coarse and images is not None:
+        logits_coarse, _ = raw_model._forward_mode(
+            text_input_ids,
+            text_attention_mask,
+            images,
+            text_outputs,
+            mode="coarse",
+            vision_inputs=coarse_inputs,
+        )
+        if coarse_inputs is not None and coarse_inputs.labels is not None:
+            labels_coarse = coarse_inputs.labels
+        loss_coarse = compute_task_loss_per_sample(logits_coarse, labels_coarse)
+
+    logits_full = logits_no
+    labels_full = labels_no
+    loss_full = loss_no
+    if compute_full and images is not None:
+        logits_full, _ = raw_model._forward_mode(
+            text_input_ids,
+            text_attention_mask,
+            images,
+            text_outputs,
+            mode="full",
+            vision_inputs=full_inputs,
+        )
+        if full_inputs is not None and full_inputs.labels is not None:
+            labels_full = full_inputs.labels
+        loss_full = compute_task_loss_per_sample(logits_full, labels_full)
+
+    loss_triplet = torch.stack([loss_no, loss_coarse, loss_full], dim=-1)
+    task_loss = (action_probs * loss_triplet).sum(dim=-1).mean()
+
+    expected_cost = raw_model._compute_expected_cost(
+        action_probs, token_count_coarse, token_count_full
+    )
+    if cost_normalize:
+        expected_cost = expected_cost / token_count_full.clamp(min=1)
+    cost_loss = expected_cost.mean() * float(lambda_cost)
+    entropy_loss = compute_entropy_loss(action_probs, float(lambda_entropy))
+    total_loss = task_loss + cost_loss + entropy_loss
+
+    p0 = action_probs[:, Action.NO_VISION].view(-1, 1, 1)
+    p1 = action_probs[:, Action.COARSE_VISION].view(-1, 1, 1)
+    p2 = action_probs[:, Action.FULL_VISION].view(-1, 1, 1)
+    logits = p0 * logits_no + p1 * logits_coarse + p2 * logits_full
+    expected_tokens = (
+        action_probs[:, Action.COARSE_VISION] * token_count_coarse
+        + action_probs[:, Action.FULL_VISION] * token_count_full
+    )
+
+    outputs = {
+        "logits": logits,
+        "labels": labels_no,
+        "action_logits": action_logits,
+        "action_probs": action_probs,
+        "actions": action_probs.argmax(dim=-1),
+        "expected_cost": expected_cost,
+        "vision_tokens": expected_tokens,
+        "token_count_coarse": token_count_coarse,
+        "token_count_full": token_count_full,
+        "loss_triplet": loss_triplet,
+    }
+    losses = {
+        "total_loss": total_loss,
+        "task_loss": task_loss,
+        "cost_loss": cost_loss,
+        "calibration_loss": torch.tensor(0.0, device=total_loss.device),
+        "gain_loss": torch.tensor(0.0, device=total_loss.device),
+        "entropy_loss": entropy_loss,
+        "policy_loss": torch.tensor(0.0, device=total_loss.device),
+        "prior_loss": torch.tensor(0.0, device=total_loss.device),
+    }
+    return outputs, losses
+
+
 def _enforce_min_full_ratio_soft(soft_targets: torch.Tensor, min_ratio: float) -> torch.Tensor:
     if min_ratio <= 0.0:
         return soft_targets
@@ -916,6 +1062,10 @@ def main() -> None:
 
     action_names = {int(action): action.name.lower() for action in Action}
     train_profiler = BatchProfiler(cfg.training.profile, action_names=action_names)
+    train_mode = str(getattr(cfg.training, "train_mode", "teacher_policy")).strip().lower()
+    mixture_branches = str(getattr(cfg.policy, "mixture_branches", "NCF"))
+    mixture_subsample_every = int(getattr(cfg.policy, "mixture_subsample_every", 0) or 0)
+    action_temperature = float(getattr(cfg.policy, "action_temperature", 1.0))
 
     if rank == 0:
         logger.info(
@@ -958,6 +1108,8 @@ def main() -> None:
     period_target_samples = torch.zeros(1, device=device)
     period_loss_triplet_sum = torch.zeros(len(Action), device=device)
     period_triplet_samples = torch.zeros(1, device=device)
+    period_token_coarse_sum = torch.zeros(1, device=device)
+    period_token_full_sum = torch.zeros(1, device=device)
     period_label_tokens = torch.zeros(1, device=device)
     period_label_total = torch.zeros(1, device=device)
 
@@ -1059,26 +1211,6 @@ def main() -> None:
 
                 with sync_ctx:
                     with autocast_ctx:
-                        if actions is None:
-                            compute_loss_triplet = cfg.policy.policy_target_mode != "none"
-                            outputs = model(
-                                input_ids=batch["input_ids"],
-                                attention_mask=batch["attention_mask"],
-                                images=batch.get("images"),
-                                labels=batch.get("labels"),
-                                compute_gain=cfg.policy.gain_supervision,
-                                compute_loss_triplet=compute_loss_triplet,
-                            )
-                        else:
-                            images = None if drop_images else batch.get("images")
-                            raw_model = model.module if isinstance(model, DDP) else model
-                            outputs = raw_model.forward_with_actions(
-                                input_ids=batch["input_ids"],
-                                attention_mask=batch["attention_mask"],
-                                images=images,
-                                actions=actions,
-                                labels=batch.get("labels"),
-                            )
                         policy_ce_start = (
                             cfg.policy.policy_ce_weight_start
                             if cfg.policy.policy_ce_weight_start is not None
@@ -1130,329 +1262,365 @@ def main() -> None:
                         open_quantile_step = float(min(1.0, max(0.0, open_quantile_step)))
                         policy_targets_hard = None
                         policy_targets_soft = None
-                        if actions is None and cfg.policy.policy_target_mode != "none":
+                        loss_triplet = None
+
+                        if actions is None and train_mode == "soft_mixture":
+                            outputs, losses = _soft_mixture_forward(
+                                model,
+                                batch,
+                                lambda_cost=lambda_cost,
+                                lambda_entropy=lambda_entropy_step,
+                                action_temperature=action_temperature,
+                                cost_normalize=cfg.policy.cost_normalize,
+                                mixture_branches=mixture_branches,
+                                mixture_subsample_every=mixture_subsample_every,
+                                step_idx=int(stage_steps),
+                            )
                             loss_triplet = outputs.get("loss_triplet")
-                            if loss_triplet is not None:
-                                # Cost-aware targets: penalize expensive actions in the triplet
-                                # using the same cost scale as expected_cost.
-                                token_count_coarse = outputs.get("token_count_coarse")
-                                token_count_full = outputs.get("token_count_full")
-                                if (
-                                    token_count_coarse is not None
-                                    and token_count_full is not None
-                                    and float(lambda_cost) > 0.0
-                                ):
-                                    raw_model = model.module if hasattr(model, "module") else model
-                                    cost_scale = float(getattr(raw_model, "cost_scale", 1.0))
-                                    zeros = torch.zeros_like(token_count_coarse)
-                                    cost_triplet = torch.stack(
-                                        [zeros, token_count_coarse, token_count_full], dim=-1
-                                    )
-                                    if cfg.policy.cost_normalize:
-                                        denom = token_count_full.clamp(min=1).unsqueeze(-1)
-                                        cost_triplet = cost_triplet / denom
-                                    loss_scale = (
-                                        loss_triplet.detach()
-                                        .mean(dim=-1, keepdim=True)
-                                        .clamp(min=1e-6)
-                                    )
-                                    loss_triplet = loss_triplet + cost_triplet * cost_scale * float(
-                                        lambda_cost
-                                    ) * loss_scale
-                                delta_no_start = (
-                                    cfg.policy.policy_delta_no_start
-                                    if cfg.policy.policy_delta_no_start is not None
-                                    else cfg.policy.policy_delta_start
+                        else:
+                            if actions is None:
+                                compute_loss_triplet = cfg.policy.policy_target_mode != "none"
+                                outputs = model(
+                                    input_ids=batch["input_ids"],
+                                    attention_mask=batch["attention_mask"],
+                                    images=batch.get("images"),
+                                    labels=batch.get("labels"),
+                                    compute_gain=cfg.policy.gain_supervision,
+                                    compute_loss_triplet=compute_loss_triplet,
                                 )
-                                delta_no_end = (
-                                    cfg.policy.policy_delta_no_end
-                                    if cfg.policy.policy_delta_no_end is not None
-                                    else cfg.policy.policy_delta_end
+                            else:
+                                images = None if drop_images else batch.get("images")
+                                raw_model = model.module if isinstance(model, DDP) else model
+                                outputs = raw_model.forward_with_actions(
+                                    input_ids=batch["input_ids"],
+                                    attention_mask=batch["attention_mask"],
+                                    images=images,
+                                    actions=actions,
+                                    labels=batch.get("labels"),
                                 )
-                                delta_coarse_start = (
-                                    cfg.policy.policy_delta_coarse_start
-                                    if cfg.policy.policy_delta_coarse_start is not None
-                                    else cfg.policy.policy_delta_start
-                                )
-                                delta_coarse_end = (
-                                    cfg.policy.policy_delta_coarse_end
-                                    if cfg.policy.policy_delta_coarse_end is not None
-                                    else cfg.policy.policy_delta_end
-                                )
-                                delta_no_warmup = int(
-                                    cfg.policy.policy_delta_no_warmup_steps
-                                    if cfg.policy.policy_delta_no_warmup_steps is not None
-                                    else cfg.policy.policy_delta_warmup_steps
-                                )
-                                delta_coarse_warmup = int(
-                                    cfg.policy.policy_delta_coarse_warmup_steps
-                                    if cfg.policy.policy_delta_coarse_warmup_steps is not None
-                                    else cfg.policy.policy_delta_warmup_steps
-                                )
-                                delta_no = _schedule_value(
-                                    delta_no_start,
-                                    delta_no_end,
-                                    delta_no_warmup,
-                                    int(stage_steps),
-                                )
-                                delta_coarse = _schedule_value(
-                                    delta_coarse_start,
-                                    delta_coarse_end,
-                                    delta_coarse_warmup,
-                                    int(stage_steps),
-                                )
-                                open_mask = None
-                                has_choices = batch.get("has_choices")
-                                if cfg.policy.policy_open_enable and has_choices is not None:
-                                    open_mask = ~has_choices.bool()
-                                no_bias = _schedule_value(
-                                    float(cfg.policy.policy_no_bias_start),
-                                    float(cfg.policy.policy_no_bias_end),
-                                    int(cfg.policy.policy_no_bias_warmup_steps),
-                                    int(stage_steps),
-                                )
-                                open_visual_bias = _schedule_value(
-                                    float(cfg.policy.policy_open_visual_bias_start),
-                                    float(cfg.policy.policy_open_visual_bias_end),
-                                    int(cfg.policy.policy_open_visual_bias_warmup_steps),
-                                    int(stage_steps),
-                                )
-                                if no_bias > 0 or (
-                                    open_visual_bias > 0 and open_mask is not None and open_mask.any()
-                                ):
-                                    loss_triplet = loss_triplet.clone()
-                                if no_bias > 0:
-                                    loss_triplet[:, Action.NO_VISION] = (
-                                        loss_triplet[:, Action.NO_VISION] + no_bias
-                                    )
-                                if (
-                                    open_visual_bias > 0
-                                    and open_mask is not None
-                                    and open_mask.any()
-                                ):
-                                    loss_triplet[open_mask, Action.COARSE_VISION] = (
-                                        loss_triplet[open_mask, Action.COARSE_VISION]
-                                        - open_visual_bias
-                                    )
-                                    loss_triplet[open_mask, Action.FULL_VISION] = (
-                                        loss_triplet[open_mask, Action.FULL_VISION]
-                                        - open_visual_bias
-                                    )
-                                if cfg.policy.policy_target_mode == "loss_margin":
-                                    policy_targets_hard = compute_policy_targets(
-                                        loss_triplet, (delta_coarse, delta_no)
-                                    )
-                                else:
-                                    raise ValueError(
-                                        f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
-                                    )
-                                open_targets = None
-                                if cfg.policy.policy_open_enable and open_mask is not None and open_mask.any():
-                                    loss_no = loss_triplet[:, Action.NO_VISION]
-                                    loss_coarse = loss_triplet[:, Action.COARSE_VISION]
-                                    loss_full = loss_triplet[:, Action.FULL_VISION]
-                                    best_vis = torch.where(
-                                        loss_coarse <= loss_full,
-                                        torch.full(
-                                            loss_coarse.shape,
-                                            int(Action.COARSE_VISION),
-                                            device=loss_coarse.device,
-                                            dtype=torch.long,
-                                        ),
-                                        torch.full(
-                                            loss_full.shape,
-                                            int(Action.FULL_VISION),
-                                            device=loss_full.device,
-                                            dtype=torch.long,
-                                        ),
-                                    )
-                                    best_vis_loss = torch.minimum(loss_coarse, loss_full)
-                                    force_steps = int(cfg.policy.policy_open_force_visual_warmup_steps)
-                                    if force_steps > 0 and (stage_steps + 1) <= force_steps:
-                                        action_name = cfg.policy.policy_open_force_visual_action
-                                        if action_name == "best_vis":
-                                            open_targets = best_vis
-                                        elif action_name == "coarse":
-                                            open_targets = torch.full(
-                                                best_vis.shape,
-                                                int(Action.COARSE_VISION),
-                                                device=best_vis.device,
-                                                dtype=torch.long,
-                                            )
-                                        else:
-                                            open_targets = torch.full(
-                                                best_vis.shape,
-                                                int(Action.FULL_VISION),
-                                                device=best_vis.device,
-                                                dtype=torch.long,
-                                            )
-                                    else:
-                                        diff = loss_no - best_vis_loss
-                                        diff_open = diff[open_mask]
-                                        if diff_open.numel() == 1:
-                                            threshold = float(diff_open.detach().item())
-                                        else:
-                                            threshold = float(
-                                                torch.quantile(
-                                                    diff_open.detach(),
-                                                    open_quantile_step,
-                                                ).item()
-                                            )
-                                        margin = float(cfg.policy.policy_open_margin)
-                                        if margin > 0:
-                                            threshold = min(threshold, margin)
-                                        allow_no = diff <= threshold
-                                        open_targets = torch.where(
-                                            allow_no,
-                                            torch.full(
-                                                best_vis.shape,
-                                                int(Action.NO_VISION),
-                                                device=best_vis.device,
-                                                dtype=torch.long,
-                                            ),
-                                            best_vis if cfg.policy.policy_open_use_best_vis else torch.full(
-                                                best_vis.shape,
-                                                int(Action.FULL_VISION),
-                                                device=best_vis.device,
-                                                dtype=torch.long,
-                                            ),
-                                        )
-                                    policy_targets_hard = policy_targets_hard.clone()
-                                    policy_targets_hard[open_mask] = open_targets[open_mask]
-                                min_full_ratio_step = float(cfg.policy.policy_min_full_ratio or 0.0)
-                                if min_full_ratio_step > 0 and cfg.policy.policy_min_full_warmup_steps > 0:
-                                    warmup = float(cfg.policy.policy_min_full_warmup_steps)
-                                    min_full_ratio_step = min_full_ratio_step * min(
-                                        1.0, (stage_steps + 1) / warmup
-                                    )
-                                min_coarse_ratio_step = float(
-                                    getattr(cfg.policy, "policy_min_coarse_ratio", 0.0) or 0.0
-                                )
-                                min_coarse_warmup = int(
-                                    getattr(cfg.policy, "policy_min_coarse_warmup_steps", 0) or 0
-                                )
-                                if min_coarse_ratio_step > 0 and min_coarse_warmup > 0:
-                                    min_coarse_ratio_step = min_coarse_ratio_step * min(
-                                        1.0, (stage_steps + 1) / float(min_coarse_warmup)
-                                    )
-                                guard_forced_mask = None
-                                if policy_targets_hard is not None and guard_window > 0:
-                                    (
-                                        policy_targets_hard,
-                                        guard_forced_mask,
-                                        guard_seen,
-                                        guard_counts,
-                                    ) = _apply_guard_quotas(
-                                        policy_targets_hard,
-                                        loss_triplet,
-                                        guard_window=guard_window,
-                                        guard_seen=guard_seen,
-                                        guard_counts=guard_counts,
-                                        min_full_ratio=float(min_full_ratio_step),
-                                        min_coarse_ratio=float(min_coarse_ratio_step),
-                                    )
-                                if cfg.policy.enable_soft_targets and policy_targets_hard is not None:
-                                    temp = float(cfg.policy.soft_target_temperature)
-                                    policy_targets_soft = torch.softmax(
-                                        -loss_triplet / temp, dim=-1
-                                    )
+                            if actions is None and cfg.policy.policy_target_mode != "none":
+                                loss_triplet = outputs.get("loss_triplet")
+                                if loss_triplet is not None:
+                                    # Cost-aware targets: penalize expensive actions in the triplet
+                                    # using the same cost scale as expected_cost.
+                                    token_count_coarse = outputs.get("token_count_coarse")
+                                    token_count_full = outputs.get("token_count_full")
                                     if (
-                                        open_targets is not None
+                                        token_count_coarse is not None
+                                        and token_count_full is not None
+                                        and float(lambda_cost) > 0.0
+                                    ):
+                                        raw_model = model.module if hasattr(model, "module") else model
+                                        cost_scale = float(getattr(raw_model, "cost_scale", 1.0))
+                                        zeros = torch.zeros_like(token_count_coarse)
+                                        cost_triplet = torch.stack(
+                                            [zeros, token_count_coarse, token_count_full], dim=-1
+                                        )
+                                        if cfg.policy.cost_normalize:
+                                            denom = token_count_full.clamp(min=1).unsqueeze(-1)
+                                            cost_triplet = cost_triplet / denom
+                                        loss_scale = (
+                                            loss_triplet.detach()
+                                            .mean(dim=-1, keepdim=True)
+                                            .clamp(min=1e-6)
+                                        )
+                                        loss_triplet = loss_triplet + cost_triplet * cost_scale * float(
+                                            lambda_cost
+                                        ) * loss_scale
+                                    delta_no_start = (
+                                        cfg.policy.policy_delta_no_start
+                                        if cfg.policy.policy_delta_no_start is not None
+                                        else cfg.policy.policy_delta_start
+                                    )
+                                    delta_no_end = (
+                                        cfg.policy.policy_delta_no_end
+                                        if cfg.policy.policy_delta_no_end is not None
+                                        else cfg.policy.policy_delta_end
+                                    )
+                                    delta_coarse_start = (
+                                        cfg.policy.policy_delta_coarse_start
+                                        if cfg.policy.policy_delta_coarse_start is not None
+                                        else cfg.policy.policy_delta_start
+                                    )
+                                    delta_coarse_end = (
+                                        cfg.policy.policy_delta_coarse_end
+                                        if cfg.policy.policy_delta_coarse_end is not None
+                                        else cfg.policy.policy_delta_end
+                                    )
+                                    delta_no_warmup = int(
+                                        cfg.policy.policy_delta_no_warmup_steps
+                                        if cfg.policy.policy_delta_no_warmup_steps is not None
+                                        else cfg.policy.policy_delta_warmup_steps
+                                    )
+                                    delta_coarse_warmup = int(
+                                        cfg.policy.policy_delta_coarse_warmup_steps
+                                        if cfg.policy.policy_delta_coarse_warmup_steps is not None
+                                        else cfg.policy.policy_delta_warmup_steps
+                                    )
+                                    delta_no = _schedule_value(
+                                        delta_no_start,
+                                        delta_no_end,
+                                        delta_no_warmup,
+                                        int(stage_steps),
+                                    )
+                                    delta_coarse = _schedule_value(
+                                        delta_coarse_start,
+                                        delta_coarse_end,
+                                        delta_coarse_warmup,
+                                        int(stage_steps),
+                                    )
+                                    open_mask = None
+                                    has_choices = batch.get("has_choices")
+                                    if cfg.policy.policy_open_enable and has_choices is not None:
+                                        open_mask = ~has_choices.bool()
+                                    no_bias = _schedule_value(
+                                        float(cfg.policy.policy_no_bias_start),
+                                        float(cfg.policy.policy_no_bias_end),
+                                        int(cfg.policy.policy_no_bias_warmup_steps),
+                                        int(stage_steps),
+                                    )
+                                    open_visual_bias = _schedule_value(
+                                        float(cfg.policy.policy_open_visual_bias_start),
+                                        float(cfg.policy.policy_open_visual_bias_end),
+                                        int(cfg.policy.policy_open_visual_bias_warmup_steps),
+                                        int(stage_steps),
+                                    )
+                                    if no_bias > 0 or (
+                                        open_visual_bias > 0 and open_mask is not None and open_mask.any()
+                                    ):
+                                        loss_triplet = loss_triplet.clone()
+                                    if no_bias > 0:
+                                        loss_triplet[:, Action.NO_VISION] = (
+                                            loss_triplet[:, Action.NO_VISION] + no_bias
+                                        )
+                                    if (
+                                        open_visual_bias > 0
                                         and open_mask is not None
                                         and open_mask.any()
                                     ):
-                                        open_onehot = F.one_hot(
-                                            open_targets[open_mask], num_classes=len(Action)
-                                        ).float()
-                                        policy_targets_soft = policy_targets_soft.clone()
-                                        policy_targets_soft[open_mask] = open_onehot
-                                    if guard_forced_mask is not None and guard_forced_mask.any():
-                                        guard_onehot = F.one_hot(
-                                            policy_targets_hard[guard_forced_mask],
-                                            num_classes=len(Action),
-                                        ).float()
-                                        policy_targets_soft = policy_targets_soft.clone()
-                                        policy_targets_soft[guard_forced_mask] = guard_onehot
-                                    if min_full_ratio_step > 0:
-                                        policy_targets_soft = _enforce_min_full_ratio_soft(
-                                            policy_targets_soft, float(min_full_ratio_step)
+                                        loss_triplet[open_mask, Action.COARSE_VISION] = (
+                                            loss_triplet[open_mask, Action.COARSE_VISION]
+                                            - open_visual_bias
                                         )
-                        policy_sample_weights = None
-                        if cfg.policy.policy_loss_weights:
-                            weight_map = {
-                                _normalize_dataset_name(k): float(v)
-                                for k, v in cfg.policy.policy_loss_weights.items()
-                            }
-                            default_weight = weight_map.get("default", 1.0)
-                            batch_datasets = batch.get("dataset") or []
-                            if batch_datasets:
-                                weights = [
-                                    weight_map.get(_normalize_dataset_name(name), default_weight)
-                                    for name in batch_datasets
-                                ]
-                                policy_sample_weights = torch.tensor(
-                                    weights, device=outputs["logits"].device, dtype=torch.float32
-                                )
-                        expected_cost_for_loss = outputs["expected_cost"]
-                        if cfg.policy.cost_normalize:
-                            token_count_full = outputs.get("token_count_full")
-                            if token_count_full is not None:
-                                expected_cost_for_loss = expected_cost_for_loss / token_count_full.clamp(
-                                    min=1
-                                )
-                        prior_weight_start = (
-                            cfg.policy.policy_prior_weight_start
-                            if cfg.policy.policy_prior_weight_start is not None
-                            else cfg.policy.policy_prior_weight
-                        )
-                        prior_weight_end = (
-                            cfg.policy.policy_prior_weight_end
-                            if cfg.policy.policy_prior_weight_end is not None
-                            else cfg.policy.policy_prior_weight
-                        )
-                        prior_weight_step = _schedule_value(
-                            float(prior_weight_start),
-                            float(prior_weight_end),
-                            int(cfg.policy.policy_prior_weight_warmup_steps),
-                            int(stage_steps),
-                        )
-                        prior_probs = None
-                        if cfg.policy.policy_prior_probs:
-                            prior_probs = torch.tensor(
-                                cfg.policy.policy_prior_probs,
-                                device=outputs["logits"].device,
-                                dtype=torch.float32,
-                            )
-                            if prior_probs.numel() != len(Action):
-                                if rank == 0:
-                                    logger.warning(
-                                        "policy_prior_probs length=%s != num_actions=%s; ignoring",
-                                        prior_probs.numel(),
-                                        len(Action),
+                                        loss_triplet[open_mask, Action.FULL_VISION] = (
+                                            loss_triplet[open_mask, Action.FULL_VISION]
+                                            - open_visual_bias
+                                        )
+                                    if cfg.policy.policy_target_mode == "loss_margin":
+                                        policy_targets_hard = compute_policy_targets(
+                                            loss_triplet, (delta_coarse, delta_no)
+                                        )
+                                    else:
+                                        raise ValueError(
+                                            f"Unknown policy_target_mode: {cfg.policy.policy_target_mode}"
+                                        )
+                                    open_targets = None
+                                    if cfg.policy.policy_open_enable and open_mask is not None and open_mask.any():
+                                        loss_no = loss_triplet[:, Action.NO_VISION]
+                                        loss_coarse = loss_triplet[:, Action.COARSE_VISION]
+                                        loss_full = loss_triplet[:, Action.FULL_VISION]
+                                        best_vis = torch.where(
+                                            loss_coarse <= loss_full,
+                                            torch.full(
+                                                loss_coarse.shape,
+                                                int(Action.COARSE_VISION),
+                                                device=loss_coarse.device,
+                                                dtype=torch.long,
+                                            ),
+                                            torch.full(
+                                                loss_full.shape,
+                                                int(Action.FULL_VISION),
+                                                device=loss_full.device,
+                                                dtype=torch.long,
+                                            ),
+                                        )
+                                        best_vis_loss = torch.minimum(loss_coarse, loss_full)
+                                        force_steps = int(cfg.policy.policy_open_force_visual_warmup_steps)
+                                        if force_steps > 0 and (stage_steps + 1) <= force_steps:
+                                            action_name = cfg.policy.policy_open_force_visual_action
+                                            if action_name == "best_vis":
+                                                open_targets = best_vis
+                                            elif action_name == "coarse":
+                                                open_targets = torch.full(
+                                                    best_vis.shape,
+                                                    int(Action.COARSE_VISION),
+                                                    device=best_vis.device,
+                                                    dtype=torch.long,
+                                                )
+                                            else:
+                                                open_targets = torch.full(
+                                                    best_vis.shape,
+                                                    int(Action.FULL_VISION),
+                                                    device=best_vis.device,
+                                                    dtype=torch.long,
+                                                )
+                                        else:
+                                            diff = loss_no - best_vis_loss
+                                            diff_open = diff[open_mask]
+                                            if diff_open.numel() == 1:
+                                                threshold = float(diff_open.detach().item())
+                                            else:
+                                                threshold = float(
+                                                    torch.quantile(
+                                                        diff_open.detach(),
+                                                        open_quantile_step,
+                                                    ).item()
+                                                )
+                                            margin = float(cfg.policy.policy_open_margin)
+                                            if margin > 0:
+                                                threshold = min(threshold, margin)
+                                            allow_no = diff <= threshold
+                                            open_targets = torch.where(
+                                                allow_no,
+                                                torch.full(
+                                                    best_vis.shape,
+                                                    int(Action.NO_VISION),
+                                                    device=best_vis.device,
+                                                    dtype=torch.long,
+                                                ),
+                                                best_vis if cfg.policy.policy_open_use_best_vis else torch.full(
+                                                    best_vis.shape,
+                                                    int(Action.FULL_VISION),
+                                                    device=best_vis.device,
+                                                    dtype=torch.long,
+                                                ),
+                                            )
+                                        policy_targets_hard = policy_targets_hard.clone()
+                                        policy_targets_hard[open_mask] = open_targets[open_mask]
+                                    min_full_ratio_step = float(cfg.policy.policy_min_full_ratio or 0.0)
+                                    if min_full_ratio_step > 0 and cfg.policy.policy_min_full_warmup_steps > 0:
+                                        warmup = float(cfg.policy.policy_min_full_warmup_steps)
+                                        min_full_ratio_step = min_full_ratio_step * min(
+                                            1.0, (stage_steps + 1) / warmup
+                                        )
+                                    min_coarse_ratio_step = float(
+                                        getattr(cfg.policy, "policy_min_coarse_ratio", 0.0) or 0.0
                                     )
-                                prior_probs = None
-                        losses = compute_total_loss(
-                            outputs["logits"],
-                            outputs.get("labels"),
-                            expected_cost_for_loss,
-                            lambda_cost,
-                            action_probs=outputs.get("action_probs"),
-                            lambda_entropy=lambda_entropy_step,
-                            action_logits=outputs.get("action_logits"),
-                            action_targets=policy_targets_hard,
-                            action_targets_soft=policy_targets_soft,
-                            lambda_policy=lambda_policy_step,
-                            policy_sample_weights=policy_sample_weights,
-                            policy_prior=prior_probs,
-                            policy_prior_weight=prior_weight_step,
-                            calibration_value=None,
-                            lambda_cal=cfg.policy.calibration_lambda,
-                            gain_pred=outputs.get("gain_pred"),
-                            gain_true=outputs.get("gain_true"),
-                            gain_loss_type=cfg.policy.gain_loss_type,
-                            lambda_gain=cfg.policy.gain_loss_weight,
-                            gain_margin=cfg.policy.gain_margin,
-                        )
+                                    min_coarse_warmup = int(
+                                        getattr(cfg.policy, "policy_min_coarse_warmup_steps", 0) or 0
+                                    )
+                                    if min_coarse_ratio_step > 0 and min_coarse_warmup > 0:
+                                        min_coarse_ratio_step = min_coarse_ratio_step * min(
+                                            1.0, (stage_steps + 1) / float(min_coarse_warmup)
+                                        )
+                                    guard_forced_mask = None
+                                    if policy_targets_hard is not None and guard_window > 0:
+                                        (
+                                            policy_targets_hard,
+                                            guard_forced_mask,
+                                            guard_seen,
+                                            guard_counts,
+                                        ) = _apply_guard_quotas(
+                                            policy_targets_hard,
+                                            loss_triplet,
+                                            guard_window=guard_window,
+                                            guard_seen=guard_seen,
+                                            guard_counts=guard_counts,
+                                            min_full_ratio=float(min_full_ratio_step),
+                                            min_coarse_ratio=float(min_coarse_ratio_step),
+                                        )
+                                    if cfg.policy.enable_soft_targets and policy_targets_hard is not None:
+                                        temp = float(cfg.policy.soft_target_temperature)
+                                        policy_targets_soft = torch.softmax(
+                                            -loss_triplet / temp, dim=-1
+                                        )
+                                        if (
+                                            open_targets is not None
+                                            and open_mask is not None
+                                            and open_mask.any()
+                                        ):
+                                            open_onehot = F.one_hot(
+                                                open_targets[open_mask], num_classes=len(Action)
+                                            ).float()
+                                            policy_targets_soft = policy_targets_soft.clone()
+                                            policy_targets_soft[open_mask] = open_onehot
+                                        if guard_forced_mask is not None and guard_forced_mask.any():
+                                            guard_onehot = F.one_hot(
+                                                policy_targets_hard[guard_forced_mask],
+                                                num_classes=len(Action),
+                                            ).float()
+                                            policy_targets_soft = policy_targets_soft.clone()
+                                            policy_targets_soft[guard_forced_mask] = guard_onehot
+                                        if min_full_ratio_step > 0:
+                                            policy_targets_soft = _enforce_min_full_ratio_soft(
+                                                policy_targets_soft, float(min_full_ratio_step)
+                                            )
+                            policy_sample_weights = None
+                            if cfg.policy.policy_loss_weights:
+                                weight_map = {
+                                    _normalize_dataset_name(k): float(v)
+                                    for k, v in cfg.policy.policy_loss_weights.items()
+                                }
+                                default_weight = weight_map.get("default", 1.0)
+                                batch_datasets = batch.get("dataset") or []
+                                if batch_datasets:
+                                    weights = [
+                                        weight_map.get(_normalize_dataset_name(name), default_weight)
+                                        for name in batch_datasets
+                                    ]
+                                    policy_sample_weights = torch.tensor(
+                                        weights, device=outputs["logits"].device, dtype=torch.float32
+                                    )
+                            expected_cost_for_loss = outputs["expected_cost"]
+                            if cfg.policy.cost_normalize:
+                                token_count_full = outputs.get("token_count_full")
+                                if token_count_full is not None:
+                                    expected_cost_for_loss = expected_cost_for_loss / token_count_full.clamp(
+                                        min=1
+                                    )
+                            prior_weight_start = (
+                                cfg.policy.policy_prior_weight_start
+                                if cfg.policy.policy_prior_weight_start is not None
+                                else cfg.policy.policy_prior_weight
+                            )
+                            prior_weight_end = (
+                                cfg.policy.policy_prior_weight_end
+                                if cfg.policy.policy_prior_weight_end is not None
+                                else cfg.policy.policy_prior_weight
+                            )
+                            prior_weight_step = _schedule_value(
+                                float(prior_weight_start),
+                                float(prior_weight_end),
+                                int(cfg.policy.policy_prior_weight_warmup_steps),
+                                int(stage_steps),
+                            )
+                            prior_probs = None
+                            if cfg.policy.policy_prior_probs:
+                                prior_probs = torch.tensor(
+                                    cfg.policy.policy_prior_probs,
+                                    device=outputs["logits"].device,
+                                    dtype=torch.float32,
+                                )
+                                if prior_probs.numel() != len(Action):
+                                    if rank == 0:
+                                        logger.warning(
+                                            "policy_prior_probs length=%s != num_actions=%s; ignoring",
+                                            prior_probs.numel(),
+                                            len(Action),
+                                        )
+                                    prior_probs = None
+                            losses = compute_total_loss(
+                                outputs["logits"],
+                                outputs.get("labels"),
+                                expected_cost_for_loss,
+                                lambda_cost,
+                                action_probs=outputs.get("action_probs"),
+                                lambda_entropy=lambda_entropy_step,
+                                action_logits=outputs.get("action_logits"),
+                                action_targets=policy_targets_hard,
+                                action_targets_soft=policy_targets_soft,
+                                lambda_policy=lambda_policy_step,
+                                policy_sample_weights=policy_sample_weights,
+                                policy_prior=prior_probs,
+                                policy_prior_weight=prior_weight_step,
+                                calibration_value=None,
+                                lambda_cal=cfg.policy.calibration_lambda,
+                                gain_pred=outputs.get("gain_pred"),
+                                gain_true=outputs.get("gain_true"),
+                                gain_loss_type=cfg.policy.gain_loss_type,
+                                lambda_gain=cfg.policy.gain_loss_weight,
+                                gain_margin=cfg.policy.gain_margin,
+                            )
                         loss = losses["total_loss"] / grad_accum
 
                     if loss.requires_grad:
@@ -1500,11 +1668,17 @@ def main() -> None:
                     argmax_actions = action_logits.argmax(dim=-1)
                 else:
                     argmax_actions = outputs["actions"]
+                action_probs_for_log = outputs.get("action_probs")
+                sampled_actions = outputs["actions"]
+                if train_mode == "soft_mixture" and action_probs_for_log is not None:
+                    sampled_actions = torch.multinomial(
+                        action_probs_for_log.detach(), num_samples=1
+                    ).squeeze(-1)
                 loss_triplet = outputs.get("loss_triplet")
 
                 if collapse_warn_enabled:
                     sampled_counts = torch.bincount(
-                        outputs["actions"].detach(), minlength=len(Action)
+                        sampled_actions.detach(), minlength=len(Action)
                     ).float()
                     sampled_ratios = (sampled_counts / max(1, batch_size)).tolist()
                     _maybe_warn_collapse("sampled", sampled_ratios, collapse_counters_sampled)
@@ -1547,7 +1721,7 @@ def main() -> None:
                 if summary_every > 0:
                     period_samples += batch_size
                     period_action_counts += torch.bincount(
-                        outputs["actions"].detach(), minlength=len(Action)
+                        sampled_actions.detach(), minlength=len(Action)
                     ).float()
                     period_argmax_counts += torch.bincount(
                         argmax_actions.detach(), minlength=len(Action)
@@ -1564,6 +1738,12 @@ def main() -> None:
                         ent = -(action_probs * (action_probs + 1e-8).log()).sum(dim=-1)
                         period_entropy_sum += ent.detach().sum()
                         period_action_prob_sum += action_probs.detach().sum(dim=0)
+                    token_count_coarse = outputs.get("token_count_coarse")
+                    token_count_full = outputs.get("token_count_full")
+                    if token_count_coarse is not None:
+                        period_token_coarse_sum += token_count_coarse.detach().sum()
+                    if token_count_full is not None:
+                        period_token_full_sum += token_count_full.detach().sum()
                     if policy_targets_hard is not None:
                         period_target_counts += torch.bincount(
                             policy_targets_hard.detach(), minlength=len(Action)
@@ -1689,6 +1869,8 @@ def main() -> None:
                         dist.all_reduce(period_target_samples, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_loss_triplet_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_triplet_samples, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_token_coarse_sum, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(period_token_full_sum, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_label_tokens, op=dist.ReduceOp.SUM)
                         dist.all_reduce(period_label_total, op=dist.ReduceOp.SUM)
                     if rank == 0:
@@ -1712,6 +1894,13 @@ def main() -> None:
                             mean_loss_triplet = (
                                 period_loss_triplet_sum / max(1.0, triplet_samples)
                             ).tolist()
+                        mean_token_coarse = float(period_token_coarse_sum.item()) / samples
+                        mean_token_full = float(period_token_full_sum.item()) / samples
+                        token_ratio = (
+                            (mean_token_coarse / mean_token_full)
+                            if mean_token_full > 0
+                            else None
+                        )
                         label_valid_ratio = 0.0
                         if period_label_total.item() > 0:
                             label_valid_ratio = float(period_label_tokens.item()) / float(
@@ -1788,6 +1977,31 @@ def main() -> None:
                             int(stage_steps),
                         )
                         open_quantile_step = float(min(1.0, max(0.0, open_quantile_step)))
+                        budget_ratio = None
+                        if cfg.vision_budget.coarse_ratio is not None:
+                            budget_ratio = float(cfg.vision_budget.coarse_ratio)
+                        elif cfg.vision_budget.coarse_budget_mode is not None:
+                            mode = str(cfg.vision_budget.coarse_budget_mode).strip().lower()
+                            if mode == "half":
+                                budget_ratio = 0.5
+                            elif mode == "quarter":
+                                budget_ratio = 0.25
+                        elif cfg.vision_budget.full_max_pixels > 0:
+                            budget_ratio = float(cfg.vision_budget.coarse_max_pixels) / float(
+                                cfg.vision_budget.full_max_pixels
+                            )
+                        if (
+                            token_ratio is not None
+                            and budget_ratio is not None
+                            and budget_ratio > 0
+                        ):
+                            deviation = abs(token_ratio - budget_ratio) / budget_ratio
+                            if deviation > 0.2:
+                                logger.warning(
+                                    "budget-ratio-warning observed=%.3f target=%.3f",
+                                    token_ratio,
+                                    budget_ratio,
+                                )
                         policy_ce_start = (
                             cfg.policy.policy_ce_weight_start
                             if cfg.policy.policy_ce_weight_start is not None
@@ -1850,7 +2064,13 @@ def main() -> None:
                             _warn("argmax", argmax_ratio)
                             _warn("target", target_ratio)
                         logger.info(
-                            "SUMMARY@%d samples=%d action_ratio=%s argmax_ratio=%s target_ratio=%s mean_probs=%s mean_loss_triplet=%s label_valid_ratio=%.4f delta_no=%.4g delta_coarse=%.4g no_bias=%.4g open_bias=%.4g open_q=%.3f lambda_policy=%.4f lambda_entropy=%.4f avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f sample_pred=%s sample_label=%s",
+                            "SUMMARY@%d samples=%d action_ratio=%s argmax_ratio=%s target_ratio=%s "
+                            "mean_probs=%s mean_loss_triplet=%s "
+                            "token_coarse=%.2f token_full=%.2f token_ratio=%s target_ratio_budget=%s "
+                            "label_valid_ratio=%.4f delta_no=%.4g delta_coarse=%.4g no_bias=%.4g open_bias=%.4g "
+                            "open_q=%.3f lambda_policy=%.4f lambda_entropy=%.4f "
+                            "avg_cost=%.4f avg_task=%.4f avg_policy=%.4f avg_entropy=%.4f "
+                            "sample_pred=%s sample_label=%s",
                             global_step,
                             int(samples),
                             action_ratio,
@@ -1858,6 +2078,10 @@ def main() -> None:
                             target_ratio,
                             mean_probs,
                             mean_loss_triplet,
+                            mean_token_coarse,
+                            mean_token_full,
+                            f"{token_ratio:.3f}" if token_ratio is not None else "None",
+                            f"{budget_ratio:.3f}" if budget_ratio is not None else "None",
                             label_valid_ratio,
                             delta_no_step,
                             delta_coarse_step,
@@ -1885,6 +2109,8 @@ def main() -> None:
                     period_target_samples.zero_()
                     period_loss_triplet_sum.zero_()
                     period_triplet_samples.zero_()
+                    period_token_coarse_sum.zero_()
+                    period_token_full_sum.zero_()
                     period_label_tokens.zero_()
                     period_label_total.zero_()
 

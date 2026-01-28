@@ -52,6 +52,7 @@ class PolicyConfig:
     baseline_pool_factor: int = 1
     gumbel_tau: float = 1.0
     use_straight_through: bool = True
+    action_temperature: float = 1.0
     eval_sample: bool = False
     policy_mode: str = "logits"
     fallback_mode: str = "none"
@@ -117,6 +118,8 @@ class PolicyConfig:
     policy_prior_weight_start: float | None = None
     policy_prior_weight_end: float | None = None
     policy_prior_weight_warmup_steps: int = 0
+    mixture_branches: str = "NCF"
+    mixture_subsample_every: int = 0
 
 
 @dataclass
@@ -129,6 +132,8 @@ class VisionBudgetConfig:
     full_max_pixels: int = 672 * 672
     patch_size: int = 14
     token_cap: int | None = None
+    coarse_ratio: float | None = None
+    coarse_budget_mode: str | None = None
 
 
 @dataclass
@@ -173,6 +178,7 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
     seed: int = 42
     profile: bool = False
+    train_mode: str = "soft_mixture"
 
 
 @dataclass
@@ -257,6 +263,8 @@ class Config:
             raise ValueError("fallback_mode must be none, coarse, or full")
         if self.policy.cost_warmup_steps < 0:
             raise ValueError("policy.cost_warmup_steps must be >= 0")
+        if self.policy.action_temperature <= 0:
+            raise ValueError("policy.action_temperature must be > 0")
         if self.policy.entropy_weight < 0:
             raise ValueError("policy.entropy_weight must be >= 0")
         if self.policy.policy_target_mode not in ("none", "loss_margin"):
@@ -355,6 +363,19 @@ class Config:
             raise ValueError("policy.collapse_warn_window_steps must be >= 0")
         if not 0.0 <= self.policy.explore_prob <= 1.0:
             raise ValueError("policy.explore_prob must be between 0 and 1")
+        if self.policy.mixture_branches not in {"NCF", "NF", "NCF_subsample"}:
+            raise ValueError("policy.mixture_branches must be NCF, NF, or NCF_subsample")
+        if self.policy.mixture_subsample_every < 0:
+            raise ValueError("policy.mixture_subsample_every must be >= 0")
+        if self.vision_budget.coarse_ratio is not None:
+            if not (0.0 < float(self.vision_budget.coarse_ratio) <= 1.0):
+                raise ValueError("vision_budget.coarse_ratio must be in (0, 1]")
+        if self.vision_budget.coarse_budget_mode is not None:
+            mode = str(self.vision_budget.coarse_budget_mode).strip().lower()
+            if mode not in {"half", "quarter"}:
+                raise ValueError("vision_budget.coarse_budget_mode must be half or quarter")
+        if self.training.train_mode not in {"soft_mixture", "teacher_policy"}:
+            raise ValueError("training.train_mode must be soft_mixture or teacher_policy")
         baseline = self.policy.baseline_name
         if baseline is not None:
             normalized = baseline.strip().lower()
@@ -579,6 +600,9 @@ def _coerce_types(cfg: Config) -> None:
     cfg.eval.log_pred_max_chars = _to_int(cfg.eval.log_pred_max_chars, "eval.log_pred_max_chars")
 
     cfg.policy.gumbel_tau = _to_float(cfg.policy.gumbel_tau, "policy.gumbel_tau")
+    cfg.policy.action_temperature = _to_float(
+        cfg.policy.action_temperature, "policy.action_temperature"
+    )
     cfg.policy.cost_scale = _to_float(cfg.policy.cost_scale, "policy.cost_scale")
     cfg.policy.cost_c1 = _to_float(cfg.policy.cost_c1, "policy.cost_c1")
     cfg.policy.cost_c2 = _to_float(cfg.policy.cost_c2, "policy.cost_c2")
@@ -782,6 +806,9 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.baseline_pool_factor = _to_int(
         cfg.policy.baseline_pool_factor, "policy.baseline_pool_factor"
     )
+    cfg.policy.mixture_subsample_every = _to_int(
+        cfg.policy.mixture_subsample_every, "policy.mixture_subsample_every"
+    )
     if isinstance(cfg.policy.cost_normalize, str):
         cfg.policy.cost_normalize = (
             cfg.policy.cost_normalize.strip().lower() in {"1", "true", "yes"}
@@ -808,4 +835,7 @@ def _coerce_types(cfg: Config) -> None:
     )
     cfg.vision_budget.token_cap = _to_int(
         cfg.vision_budget.token_cap, "vision_budget.token_cap", allow_none=True
+    )
+    cfg.vision_budget.coarse_ratio = _to_float(
+        cfg.vision_budget.coarse_ratio, "vision_budget.coarse_ratio", allow_none=True
     )
