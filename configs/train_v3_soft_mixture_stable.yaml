@@ -23,11 +23,11 @@ policy:
   cost_warmup_steps: 0
   cost_normalize: true
   mixture_branches: NCF_subsample
-  mixture_subsample_every: 8
+  mixture_subsample_every: 16
 
 vision_budget:
   coarse_budget_mode: half
-  full_long_side: 384
-  full_max_pixels: 147456
-  coarse_long_side: 192
-  coarse_max_pixels: 36864
+  full_long_side: 336
+  full_max_pixels: 112896
+  coarse_long_side: 224
+  coarse_max_pixels: 50176
