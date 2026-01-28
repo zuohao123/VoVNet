@@ -1,0 +1,26 @@
+training:
+  train_mode: soft_mixture
+  stage1_epochs: 0
+  stage2_max_steps: 20001
+  per_device_batch_size: 1
+  gradient_accumulation: 16
+  gradient_checkpointing: true
+  log_every: 50
+  summary_every: 500
+  lambda_cost: 0.0005
+
+policy:
+  policy_target_mode: none
+  policy_ce_weight: 0.0
+  action_temperature: 2.0
+  entropy_weight: 0.08
+  cost_normalize: true
+  mixture_branches: NCF_subsample
+  mixture_subsample_every: 32
+
+vision_budget:
+  coarse_budget_mode: half
+  full_long_side: 384
+  full_max_pixels: 147456
+  coarse_long_side: 192
+  coarse_max_pixels: 36864
