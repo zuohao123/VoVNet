@@ -16,6 +16,7 @@ from src.eval.metrics import (
     multi_choice_accuracy,
     multi_choice_fuzzy_accuracy,
     vqa_accuracy_score,
+    vqa_fuzzy_accuracy,
 )
 
 
@@ -47,6 +48,8 @@ def get_metric_fn(name: str) -> Callable[[Iterable[str], Iterable[object]], floa
         return multi_choice_fuzzy_accuracy
     if name in {"vqa", "vqa_accuracy", "textvqa"}:
         return vqa_accuracy_score
+    if name in {"vqa_fuzzy", "vqa_lenient", "textvqa_fuzzy"}:
+        return vqa_fuzzy_accuracy
     raise ValueError(f"Unknown metric: {name}")
 
 
@@ -66,8 +69,8 @@ _PRESET_METRICS = {
     "mmbench_dev": "multi_choice",
     "mmmu": "multi_choice",
     "mmmu_validation": "multi_choice",
-    "textvqa": "vqa_accuracy",
-    "textvqa_validation": "vqa_accuracy",
+    "textvqa": "vqa_fuzzy",
+    "textvqa_validation": "vqa_fuzzy",
 }
 
 

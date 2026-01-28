@@ -266,3 +266,34 @@ def vqa_accuracy_score(preds: Iterable[str], refs: Iterable[object]) -> float:
         match = sum(1 for ans in answers if _normalize_vqa(ans) == pred_norm)
         total += min(match / 3.0, 1.0)
     return total / len(preds)
+
+
+def vqa_fuzzy_accuracy(
+    preds: Iterable[str], refs: Iterable[object], threshold: float = 0.5
+) -> float:
+    """Lenient VQA accuracy with fuzzy string matching."""
+    preds = list(preds)
+    refs = list(refs)
+    if not preds:
+        return 0.0
+    correct = 0
+    for pred, ref in zip(preds, refs):
+        answers = _extract_answer_list(ref)
+        if not answers:
+            continue
+        pred_norm = _normalize_vqa(pred)
+        best = 0.0
+        for ans in answers:
+            ans_norm = _normalize_vqa(ans)
+            if not ans_norm:
+                continue
+            if pred_norm == ans_norm:
+                best = 1.0
+                break
+            if pred_norm and (pred_norm in ans_norm or ans_norm in pred_norm):
+                best = max(best, 0.9)
+                continue
+            best = max(best, _fuzzy_similarity(pred_norm, ans_norm))
+        if best >= threshold:
+            correct += 1
+    return correct / len(preds)

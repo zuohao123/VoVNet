@@ -1,6 +1,6 @@
 defaults:
   prompt_template: "Question: {question}\nAnswer:"
-  metric: "vqa_accuracy"
+  metric: "vqa_fuzzy"
   text_field: "question"
   answer_field: "answer"
   image_field: "image"

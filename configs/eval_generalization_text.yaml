@@ -16,5 +16,5 @@ datasets:
   - name: "textvqa"
     source: "jsonl"
     jsonl: "data/processed/textvqa/textvqa_validation_prompt.jsonl"
-    metric: "vqa_accuracy"
+    metric: "vqa_fuzzy"
     answer_field: "answer"
