@@ -583,6 +583,9 @@ def _soft_mixture_forward(
     mixture_branches: str,
     mixture_subsample_every: int,
     step_idx: int,
+    explore_prob: float,
+    policy_prior_weight: float,
+    policy_prior_probs: List[float] | None,
 ) -> tuple[Dict[str, Any], Dict[str, torch.Tensor]]:
     raw_model = getattr(model, "module", model)
     images = batch.get("images")
@@ -623,6 +626,11 @@ def _soft_mixture_forward(
             # Skip the most expensive branch on non-interval steps.
             compute_full = False
 
+    allowed_mask = torch.ones_like(action_probs)
+    if not compute_coarse:
+        allowed_mask[:, Action.COARSE_VISION] = 0.0
+    if not compute_full:
+        allowed_mask[:, Action.FULL_VISION] = 0.0
     if not compute_coarse or not compute_full:
         action_probs = action_probs.clone()
         if not compute_coarse:
@@ -630,6 +638,11 @@ def _soft_mixture_forward(
         if not compute_full:
             action_probs[:, Action.FULL_VISION] = 0.0
         action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+    # Exploration floor: mix with uniform over allowed actions (training only).
+    eps = max(0.0, min(1.0, float(explore_prob)))
+    if eps > 0:
+        uniform = allowed_mask / allowed_mask.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        action_probs = (1.0 - eps) * action_probs + eps * uniform
 
     logits_no = text_outputs.logits
     labels_no = text_labels
@@ -677,7 +690,23 @@ def _soft_mixture_forward(
         expected_cost = expected_cost / token_count_full.clamp(min=1)
     cost_loss = expected_cost.mean() * float(lambda_cost)
     entropy_loss = compute_entropy_loss(action_probs, float(lambda_entropy))
-    total_loss = task_loss + cost_loss + entropy_loss
+    prior_loss = torch.tensor(0.0, device=task_loss.device)
+    prior_weight = float(policy_prior_weight)
+    if prior_weight > 0:
+        if policy_prior_probs is not None:
+            prior = torch.tensor(
+                policy_prior_probs, device=action_probs.device, dtype=action_probs.dtype
+            )
+            if prior.numel() != action_probs.shape[-1]:
+                raise ValueError("policy_prior_probs must have 3 elements (N/C/F).")
+            prior = prior * allowed_mask.mean(dim=0)
+        else:
+            prior = allowed_mask.mean(dim=0)
+        prior = prior / prior.sum().clamp_min(1e-8)
+        mean_probs = action_probs.mean(dim=0).clamp_min(1e-8)
+        prior = prior.clamp_min(1e-8)
+        prior_loss = (mean_probs * (mean_probs.log() - prior.log())).sum() * prior_weight
+    total_loss = task_loss + cost_loss + entropy_loss + prior_loss
 
     p0 = action_probs[:, Action.NO_VISION].view(-1, 1, 1)
     p1 = action_probs[:, Action.COARSE_VISION].view(-1, 1, 1)
@@ -708,7 +737,7 @@ def _soft_mixture_forward(
         "gain_loss": torch.tensor(0.0, device=total_loss.device),
         "entropy_loss": entropy_loss,
         "policy_loss": torch.tensor(0.0, device=total_loss.device),
-        "prior_loss": torch.tensor(0.0, device=total_loss.device),
+        "prior_loss": prior_loss,
     }
     return outputs, losses
 
@@ -1275,6 +1304,9 @@ def main() -> None:
                                 mixture_branches=mixture_branches,
                                 mixture_subsample_every=mixture_subsample_every,
                                 step_idx=int(stage_steps),
+                                explore_prob=cfg.policy.explore_prob,
+                                policy_prior_weight=cfg.policy.policy_prior_weight,
+                                policy_prior_probs=cfg.policy.policy_prior_probs,
                             )
                             loss_triplet = outputs.get("loss_triplet")
                         else:

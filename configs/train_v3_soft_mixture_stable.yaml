@@ -13,7 +13,14 @@ policy:
   policy_ce_weight: 0.0
   action_temperature: 5.0
   entropy_weight: 0.5
+  entropy_weight_start: 0.5
+  entropy_weight_end: 0.5
+  entropy_weight_warmup_steps: 0
+  explore_prob: 0.2
+  policy_prior_weight: 0.05
+  policy_prior_probs: [0.2, 0.4, 0.4]
   lambda_cost: 0.005
+  cost_warmup_steps: 0
   cost_normalize: true
   mixture_branches: NCF_subsample
   mixture_subsample_every: 8
