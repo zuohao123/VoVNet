@@ -78,6 +78,7 @@ class VoVNet(nn.Module):
         fallback_entropy_threshold: Optional[float] = None,
         fallback_margin_threshold: Optional[float] = None,
         cost_scale: float = 1.0,
+        cost_mode: str = "token",
         cost_c1: float = 1.0,
         cost_c2: float = 4.0,
         full_vlm: Optional[BaseVLM] = None,
@@ -99,6 +100,7 @@ class VoVNet(nn.Module):
         self.fallback_entropy_threshold = fallback_entropy_threshold
         self.fallback_margin_threshold = fallback_margin_threshold
         self.cost_scale = cost_scale
+        self.cost_mode = cost_mode
         self.cost_c1 = cost_c1
         self.cost_c2 = cost_c2
 
@@ -651,10 +653,18 @@ class VoVNet(nn.Module):
         token_count_coarse: Tensor,
         token_count_full: Tensor,
     ) -> Tensor:
-        expected_tokens = (
-            action_probs[:, Action.COARSE_VISION] * token_count_coarse
-            + action_probs[:, Action.FULL_VISION] * token_count_full
-        )
+        if self.cost_mode == "fixed":
+            cost_c = token_count_coarse.new_tensor(self.cost_c1)
+            cost_f = token_count_full.new_tensor(self.cost_c2)
+            expected_tokens = (
+                action_probs[:, Action.COARSE_VISION] * cost_c
+                + action_probs[:, Action.FULL_VISION] * cost_f
+            )
+        else:
+            expected_tokens = (
+                action_probs[:, Action.COARSE_VISION] * token_count_coarse
+                + action_probs[:, Action.FULL_VISION] * token_count_full
+            )
         scale = action_probs.new_tensor(self.cost_scale)
         return expected_tokens * scale
 

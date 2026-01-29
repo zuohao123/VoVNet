@@ -59,9 +59,11 @@ class PolicyConfig:
     fallback_entropy_threshold: float | None = None
     fallback_margin_threshold: float | None = None
     cost_scale: float = 1.0
+    cost_mode: str = "token"
     cost_c1: float = 1.0
     cost_c2: float = 4.0
     cost_normalize: bool = False
+    cost_floor_mode: str = "none"
     lambda_cost: float = 0.1
     cost_warmup_steps: int = 0
     calibration_lambda: float = 0.0
@@ -118,6 +120,7 @@ class PolicyConfig:
     policy_prior_weight_start: float | None = None
     policy_prior_weight_end: float | None = None
     policy_prior_weight_warmup_steps: int = 0
+    logit_norm: bool = False
     mixture_branches: str = "NCF"
     mixture_subsample_every: int = 0
 
@@ -367,6 +370,10 @@ class Config:
             raise ValueError("policy.mixture_branches must be NCF, NF, or NCF_subsample")
         if self.policy.mixture_subsample_every < 0:
             raise ValueError("policy.mixture_subsample_every must be >= 0")
+        if self.policy.cost_floor_mode not in {"none", "budget"}:
+            raise ValueError("policy.cost_floor_mode must be 'none' or 'budget'")
+        if self.policy.cost_mode not in {"token", "fixed"}:
+            raise ValueError("policy.cost_mode must be 'token' or 'fixed'")
         if self.vision_budget.coarse_ratio is not None:
             if not (0.0 < float(self.vision_budget.coarse_ratio) <= 1.0):
                 raise ValueError("vision_budget.coarse_ratio must be in (0, 1]")
@@ -809,10 +816,16 @@ def _coerce_types(cfg: Config) -> None:
     cfg.policy.mixture_subsample_every = _to_int(
         cfg.policy.mixture_subsample_every, "policy.mixture_subsample_every"
     )
+    if isinstance(cfg.policy.cost_floor_mode, str):
+        cfg.policy.cost_floor_mode = cfg.policy.cost_floor_mode.strip().lower()
     if isinstance(cfg.policy.cost_normalize, str):
         cfg.policy.cost_normalize = (
             cfg.policy.cost_normalize.strip().lower() in {"1", "true", "yes"}
         )
+    if isinstance(cfg.policy.cost_mode, str):
+        cfg.policy.cost_mode = cfg.policy.cost_mode.strip().lower()
+    if isinstance(cfg.policy.logit_norm, str):
+        cfg.policy.logit_norm = cfg.policy.logit_norm.strip().lower() in {"1", "true", "yes"}
 
     cfg.data.sample_ratios = _to_float_dict(
         cfg.data.sample_ratios, "data.sample_ratios"

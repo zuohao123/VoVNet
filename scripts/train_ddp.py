@@ -236,6 +236,7 @@ def build_model(cfg: Config) -> VoVNet:
         fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
         fallback_margin_threshold=cfg.policy.fallback_margin_threshold,
         cost_scale=cfg.policy.cost_scale,
+        cost_mode=cfg.policy.cost_mode,
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )
@@ -580,6 +581,11 @@ def _soft_mixture_forward(
     lambda_entropy: float,
     action_temperature: float,
     cost_normalize: bool,
+    cost_mode: str,
+    cost_floor_mode: str,
+    cost_floor_coarse: float,
+    cost_floor_full: float,
+    logit_norm: bool,
     mixture_branches: str,
     mixture_subsample_every: int,
     step_idx: int,
@@ -613,6 +619,10 @@ def _soft_mixture_forward(
     text_outputs, action_logits, _ = raw_model.text_first(
         text_input_ids, text_attention_mask
     )
+    if logit_norm:
+        action_logits = action_logits - action_logits.mean(dim=-1, keepdim=True)
+        denom = action_logits.std(dim=-1, keepdim=True).clamp_min(1e-6)
+        action_logits = action_logits / denom
     temperature = max(float(action_temperature), 1e-6)
     action_probs = torch.softmax(action_logits / temperature, dim=-1)
 
@@ -683,11 +693,20 @@ def _soft_mixture_forward(
     loss_triplet = torch.stack([loss_no, loss_coarse, loss_full], dim=-1)
     task_loss = (action_probs * loss_triplet).sum(dim=-1).mean()
 
+    cost_tokens_coarse = token_count_coarse
+    cost_tokens_full = token_count_full
+    if cost_floor_mode == "budget":
+        floor_c = token_count_coarse.new_tensor(float(cost_floor_coarse))
+        floor_f = token_count_full.new_tensor(float(cost_floor_full))
+        cost_tokens_coarse = torch.maximum(cost_tokens_coarse, floor_c)
+        cost_tokens_full = torch.maximum(cost_tokens_full, floor_f)
     expected_cost = raw_model._compute_expected_cost(
-        action_probs, token_count_coarse, token_count_full
+        action_probs, cost_tokens_coarse, cost_tokens_full
     )
+    if cost_mode == "fixed":
+        cost_normalize = False
     if cost_normalize:
-        expected_cost = expected_cost / token_count_full.clamp(min=1)
+        expected_cost = expected_cost / cost_tokens_full.clamp(min=1)
     cost_loss = expected_cost.mean() * float(lambda_cost)
     entropy_loss = compute_entropy_loss(action_probs, float(lambda_entropy))
     prior_loss = torch.tensor(0.0, device=task_loss.device)
@@ -1294,6 +1313,17 @@ def main() -> None:
                         loss_triplet = None
 
                         if actions is None and train_mode == "soft_mixture":
+                            cost_floor_mode = str(cfg.policy.cost_floor_mode)
+                            cost_floor_coarse = 0.0
+                            cost_floor_full = 0.0
+                            if cost_floor_mode == "budget":
+                                patch = max(1, int(cfg.vision_budget.patch_size))
+                                cost_floor_coarse = float(
+                                    max(1, cfg.vision_budget.coarse_max_pixels // (patch * patch))
+                                )
+                                cost_floor_full = float(
+                                    max(1, cfg.vision_budget.full_max_pixels // (patch * patch))
+                                )
                             outputs, losses = _soft_mixture_forward(
                                 model,
                                 batch,
@@ -1301,6 +1331,11 @@ def main() -> None:
                                 lambda_entropy=lambda_entropy_step,
                                 action_temperature=action_temperature,
                                 cost_normalize=cfg.policy.cost_normalize,
+                                cost_mode=cfg.policy.cost_mode,
+                                cost_floor_mode=cost_floor_mode,
+                                cost_floor_coarse=cost_floor_coarse,
+                                cost_floor_full=cost_floor_full,
+                                logit_norm=cfg.policy.logit_norm,
                                 mixture_branches=mixture_branches,
                                 mixture_subsample_every=mixture_subsample_every,
                                 step_idx=int(stage_steps),

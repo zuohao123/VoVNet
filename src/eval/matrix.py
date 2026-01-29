@@ -79,6 +79,7 @@ def build_model(cfg: Config) -> VoVNet:
         fallback_entropy_threshold=cfg.policy.fallback_entropy_threshold,
         fallback_margin_threshold=cfg.policy.fallback_margin_threshold,
         cost_scale=cfg.policy.cost_scale,
+        cost_mode=cfg.policy.cost_mode,
         cost_c1=cfg.policy.cost_c1,
         cost_c2=cfg.policy.cost_c2,
     )
