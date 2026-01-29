@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--split", default="train")
     parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument("--streaming", action="store_true")
     return parser.parse_args()
 
 
@@ -114,11 +115,15 @@ def _save_image(
     return str(image_path), url_used, sha1
 
 
-def _load_split(split: str) -> Any:
+def _load_split(split: str, streaming: bool) -> Any:
     try:
-        return safe_load_dataset("liuhaotian/LLaVA-Instruct-150K", None, split=split)
+        return safe_load_dataset(
+            "liuhaotian/LLaVA-Instruct-150K", None, split=split, streaming=streaming
+        )
     except Exception:
-        dataset = safe_load_dataset("liuhaotian/LLaVA-Instruct-150K", None, split="train")
+        dataset = safe_load_dataset(
+            "liuhaotian/LLaVA-Instruct-150K", None, split="train", streaming=streaming
+        )
         if isinstance(dataset, dict):
             if split in dataset:
                 return dataset[split]
@@ -135,7 +140,14 @@ def main() -> None:
     raw_path = output_dir / "raw.jsonl"
     bad_path = output_dir / "bad_samples.jsonl"
 
-    dataset = _load_split(args.split)
+    try:
+        dataset = _load_split(args.split, streaming=args.streaming)
+    except Exception as exc:
+        if not args.streaming:
+            logger.warning("Non-streaming load failed: %s; retrying with streaming.", exc)
+            dataset = _load_split(args.split, streaming=True)
+        else:
+            raise
     total = len(dataset) if hasattr(dataset, "__len__") else None
     logger.info("Loaded split=%s size=%s", args.split, total)
 
