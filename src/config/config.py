@@ -270,8 +270,10 @@ class Config:
             raise ValueError("policy.action_temperature must be > 0")
         if self.policy.entropy_weight < 0:
             raise ValueError("policy.entropy_weight must be >= 0")
-        if self.policy.policy_target_mode not in ("none", "loss_margin"):
-            raise ValueError("policy.policy_target_mode must be none or loss_margin")
+        if self.policy.policy_target_mode not in ("none", "loss_margin", "loss_cost_soft"):
+            raise ValueError(
+                "policy.policy_target_mode must be none, loss_margin, or loss_cost_soft"
+            )
         if self.policy.policy_ce_weight < 0:
             raise ValueError("policy.policy_ce_weight must be >= 0")
         if self.policy.policy_ce_weight_start is not None and self.policy.policy_ce_weight_start < 0:

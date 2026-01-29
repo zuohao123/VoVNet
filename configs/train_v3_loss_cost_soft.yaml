@@ -1,0 +1,37 @@
+training:
+  train_mode: teacher_policy
+
+policy:
+  policy_target_mode: "loss_cost_soft"
+  enable_soft_targets: true
+  soft_target_temperature: 1.0
+  policy_ce_weight: 1.0
+  policy_ce_weight_start: 1.0
+  policy_ce_weight_end: 1.0
+  policy_ce_weight_warmup_steps: 0
+  policy_open_enable: false
+  policy_open_force_visual_warmup_steps: 0
+  policy_open_visual_bias_start: 0.0
+  policy_open_visual_bias_end: 0.0
+  policy_no_bias_start: 0.0
+  policy_no_bias_end: 0.0
+  policy_no_bias_warmup_steps: 0
+  policy_delta_start: 0.0
+  policy_delta_end: 0.0
+  policy_delta_warmup_steps: 0
+  policy_guard_window: 0
+  policy_min_full_ratio: 0.0
+  policy_min_coarse_ratio: 0.0
+  policy_prior_weight_start: 0.0
+  policy_prior_weight_end: 0.0
+  policy_prior_weight_warmup_steps: 0
+  policy_prior_probs: null
+
+  # Latency-oriented cost targets (NO vs vision)
+  cost_mode: fixed
+  cost_c1: 250.0
+  cost_c2: 260.0
+  cost_scale: 1.0
+  cost_normalize: false
+  lambda_cost: 0.01
+  cost_warmup_steps: 1000
