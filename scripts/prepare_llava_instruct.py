@@ -170,8 +170,8 @@ def main() -> None:
             if ex.get("image_path"):
                 url_candidates += _infer_coco_urls(str(ex.get("image_path")))
             # De-duplicate while preserving order.
-            seen = set()
-            url_candidates = [u for u in url_candidates if not (u in seen or seen.add(u))]
+            seen_urls = set()
+            url_candidates = [u for u in url_candidates if not (u in seen_urls or seen_urls.add(u))]
 
             image_path, image_url, sha1 = _save_image(image, url_candidates, image_dir, sample_id)
             if image_path is None:
