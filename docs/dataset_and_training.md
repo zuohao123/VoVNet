@@ -147,6 +147,41 @@ export VOVNET_IMAGE_ROOTS=/path/to/coco/train2014:/path/to/coco/val2014
 
 然后重新执行 `prepare_dataset.py` / `prepare_all.py` 即可。
 
+### 3.7 LLaVA-Instruct-150K（新支持）
+
+使用新脚本准备并转换为 VoVNet 统一 JSONL：
+
+```bash
+python scripts/prepare_llava_instruct.py --output_dir data/llava_instruct
+python scripts/convert_llava_to_train_format.py \
+  --input_dir data/llava_instruct \
+  --output_dir data/llava_instruct
+```
+
+输出：
+- `data/llava_instruct/raw.jsonl`
+- `data/llava_instruct/converted_train.jsonl`
+- `data/llava_instruct/images/`
+- `data/llava_instruct/manifest.json`
+
+如需合并多个训练集：
+
+```bash
+python scripts/merge_datasets.py \
+  --inputs data/llava_instruct/converted_train.jsonl data/processed/mmbench/mmbench_train.jsonl \
+  --output data/processed/mixed_train.jsonl
+```
+
+多数据集混合采样比例示例（1:1:1）：
+
+```yaml
+data:
+  sample_ratios:
+    mmbench: 1.0
+    textvqa: 1.0
+    llava_instruct: 1.0
+```
+
 ## 4. 训练脚本执行
 
 训练入口：`scripts/train.py`（配置文件在 `configs/`）

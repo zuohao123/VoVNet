@@ -30,11 +30,12 @@ policy:
 
   # Latency-oriented cost targets (NO vs vision)
   cost_mode: fixed
-  cost_c1: 250.0
-  cost_c2: 260.0
-  cost_scale: 1.0
+  # Use relative latency costs; keep them on the same scale as loss_triplet.
+  cost_c1: 1.0
+  cost_c2: 1.05
+  cost_scale: 0.001
   cost_normalize: false
-  lambda_cost: 0.001
+  lambda_cost: 1.0
   cost_warmup_steps: 0
 
 vision_budget:

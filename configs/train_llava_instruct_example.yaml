@@ -1,0 +1,5 @@
+data:
+  train_jsonl: "data/llava_instruct/converted_train.jsonl"
+  eval_jsonl: null
+  sample_ratios:
+    llava_instruct: 1.0

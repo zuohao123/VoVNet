@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict
 
 from .adapters.mmbench import MMBenchAdapter, MMBenchLiteAdapter
+from .adapters.llava_instruct import LLaVAInstructAdapter
 from .adapters.mmmu import MMMUAdapter
 from .adapters.textvqa import TextVQAAdapter
 
@@ -14,6 +15,7 @@ _REGISTRY = {
     "mmbench": MMBenchAdapter,
     "mmbench_lite": MMBenchLiteAdapter,
     "mmmu": MMMUAdapter,
+    "llava_instruct": LLaVAInstructAdapter,
 }
 
 
