@@ -84,7 +84,7 @@
 Vision-language models (VLMs) routinely encode images whenever they are present, even when the question can be answered from text alone.
 We present \method, a text-first policy that selects among three discrete visual budgets---\no, \coarse, and \full---to optimize an explicit accuracy--cost trade-off.
 The policy is trained with counterfactual loss targets (and optional gain supervision), which tie action selection to task quality while accounting for visual cost.
-We evaluate on MMBench~\cite{liu2024mmbench}, MMMU~\cite{yue2023mmmu}, and TextVQA~\cite{singh2019textvqa} with aligned prompts/decoding and cost accounting, reporting action ratios, system profiling, and comparisons to fixed-budget, uncertainty-threshold, random-matched, and token-reduction baselines.
+We evaluate on MMBench~\cite{liu2024mmbench} and TextVQA~\cite{singh2019textvqa} with aligned prompts/decoding and cost accounting, reporting action ratios, system profiling, and comparisons to fixed-budget, uncertainty-threshold, random-matched, and token-reduction baselines.
 \end{abstract}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -111,7 +111,7 @@ The policy is trained with a cost-aware objective using \emph{soft targets} deri
 \begin{itemize}
   \item We cast \emph{vision invocation} as a cost-aware action-selection problem and learn a text-first policy over \no/\coarse/\full.
   \item We show that coarse vision frequently matches full vision, enabling substantial cost reductions without large accuracy loss.
-  \item We provide a unified evaluation suite (Pareto curves, action distributions, profiling) and compare to fixed-budget, uncertainty-threshold, random-matched, and token-reduction baselines across MMBench, MMMU, and TextVQA.
+  \item We provide a unified evaluation suite (Pareto curves, action distributions, profiling) and compare to fixed-budget, uncertainty-threshold, random-matched, and token-reduction baselines across MMBench and TextVQA.
 \end{itemize}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -380,8 +380,7 @@ To keep conclusions conservative, all reported numbers use the same Qwen3-VL-8B 
 
 \paragraph{Datasets and splits.}
 Our primary benchmark is MMBench (dev split)~\cite{liu2024mmbench}, since test labels are withheld.
-We additionally evaluate MMMU (validation)~\cite{yue2023mmmu} for vision-critical reasoning and
-TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
+We additionally evaluate TextVQA (validation)~\cite{singh2019textvqa} for OCR-heavy scenarios.
 Training mixes MMBench + LLaVA-style instruction data + TextVQA; evaluation uses held-out splits only.
 For multiple-choice benchmarks, we evaluate against the ground-truth choice text (not just the letter) using a unified prompt.
 For open-ended datasets (TextVQA), we keep task-specific prompts and answer normalization consistent with training.
@@ -389,7 +388,7 @@ Unless otherwise noted, tables report dev splits under a unified evaluation prot
 
 \paragraph{Metrics.}
 We report task accuracy under a unified normalization pipeline.
-For MMBench/MMMU (multi-choice), predictions are matched to the correct choice text and we accept letter-format answers (A/B/...) after normalization; we additionally report a fuzzy string match in the appendix to diagnose formatting errors.
+For MMBench (multi-choice), predictions are matched to the correct choice text and we accept letter-format answers (A/B/...) after normalization; we additionally report a fuzzy string match in the appendix to diagnose formatting errors.
 For TextVQA, we report the official VQA accuracy (normalized exact match against multiple reference answers) and include a fuzzy similarity diagnostic in the appendix to quantify near-miss OCR cases.
 Unless otherwise noted, the main results report mean$\pm$std over three runs; appendix tables may report single-run values for space.
 
@@ -410,12 +409,12 @@ multiple seeds for selected settings. Engineering stabilizations (margin
 schedules, overrides, fallback rules) are reported in the appendix.
 
 \paragraph{Evaluation suite.}
-We execute a unified evaluation queue that covers MMBench (exact/fuzzy), TextVQA, and MMMU,
+We execute a unified evaluation queue that covers MMBench (exact/fuzzy) and TextVQA,
 plus baselines (Always-Full/Coarse/No, Threshold (entropy/margin), Random matched
 global/bucketed, Resolution scaling, Token Pruning/Merge, Multi-Granularity, Fallback, and Oracle).
 All runs share the same config stack and checkpoint, and results are aggregated into JSON/CSV
 for plotting and table generation. We use dataset-appropriate metrics
-(multiple-choice accuracy for MMBench/MMMU; VQA accuracy plus fuzzy matching
+(multiple-choice accuracy for MMBench; VQA accuracy plus fuzzy matching
 diagnostics for TextVQA). Fallback thresholds and uncertainty-threshold baselines
 are tuned via sweeps on the validation split under the same cost accounting.
 For profiling, we report latency/memory alongside token-cost proxies; the full
@@ -476,15 +475,15 @@ The key question is whether selective invocation can match Always-Full accuracy 
   }
 \end{table}
 
-\subsection{Cross-Benchmark Results (MMMU and TextVQA)}
+\subsection{Cross-Benchmark Results (TextVQA)}
 \label{sec:generalization}
-We report policy performance on MMMU and TextVQA as part of the main evaluation suite,
+We report policy performance on TextVQA as part of the main evaluation suite,
 using the same checkpoints and prompts as MMBench.
 We analyze how action distributions shift across datasets and report accuracy, cost,
 and action ratios in \cref{tab:generalization}.
 
 \begin{table}[t]
-  \caption{Cross-benchmark results on MMMU/TextVQA (dev splits).}
+  \caption{Cross-benchmark results on TextVQA (dev split).}
   \label{tab:generalization}
   \centering
   {\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.1}\scriptsize
@@ -492,8 +491,6 @@ and action ratios in \cref{tab:generalization}.
     \toprule
     Dataset & Method & Acc$\uparrow$ & Cost$\downarrow$ & N/C/F \\
     \midrule
-    MMMU & \method & 0.128 & 0.06 & 98/0/2 \\
-    MMMU & Always-Full & 0.204 & 3.20 & 0/0/100 \\
     TextVQA & \method & 0.0347 & 0.00 & 100/0/0 \\
     TextVQA & Always-Full & 0.0333 & 6.94 & 0/0/100 \\
     \bottomrule
@@ -717,7 +714,7 @@ Per-device batch size 1 with gradient accumulation 4. Mixed precision fp16 and
 gradient checkpointing are enabled on V100 GPUs. Checkpoints are saved every 2{,}000 steps.
 
 \paragraph{Evaluation protocol.}
-Main benchmarks: MMBench-dev, TextVQA validation, and MMMU validation.
+Main benchmarks: MMBench-dev and TextVQA validation.
 Prompts are aligned with training using per-example \texttt{prompt\_template} fields in JSONL.
 For multiple-choice datasets, we evaluate against the correct choice text
 and accept either the letter or matching choice text as correct after basic normalization

@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -31,6 +32,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="train")
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--streaming", action="store_true")
+    parser.add_argument("--num_workers", type=int, default=8, help="Download workers (threads).")
+    parser.add_argument(
+        "--max_inflight",
+        type=int,
+        default=None,
+        help="Max in-flight downloads. Default = num_workers * 4.",
+    )
+    parser.add_argument(
+        "--flush_every",
+        type=int,
+        default=200,
+        help="Flush output files every N samples.",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +129,46 @@ def _save_image(
     return str(image_path), url_used, sha1
 
 
+def _process_example(
+    idx: int, ex: Dict[str, Any], image_dir: Path
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    sample_id = str(ex.get("id") or ex.get("sample_id") or ex.get("image_id") or idx)
+    image_obj = ex.get("image") or ex.get("image_data")
+    image_url = ex.get("image_url") or ex.get("url")
+    image, url_candidates = _image_from_any(image_obj)
+    if image_url and _is_url(image_url):
+        url_candidates = [image_url] + url_candidates
+    if isinstance(image_obj, str):
+        url_candidates += _infer_coco_urls(image_obj)
+    if ex.get("image_path"):
+        url_candidates += _infer_coco_urls(str(ex.get("image_path")))
+    # De-duplicate while preserving order.
+    seen_urls = set()
+    url_candidates = [u for u in url_candidates if not (u in seen_urls or seen_urls.add(u))]
+
+    image_path, image_url, sha1 = _save_image(image, url_candidates, image_dir, sample_id)
+
+    bad_record = None
+    if image_path is None:
+        bad_record = {
+            "id": sample_id,
+            "reason": "missing_image",
+            "image_field": ex.get("image"),
+            "image_url": image_url,
+        }
+
+    record: Dict[str, Any] = {}
+    for key, value in ex.items():
+        if key == "image":
+            continue
+        record[key] = value
+    record["id"] = sample_id
+    record["image_path"] = image_path
+    record["image_url"] = image_url
+    record["image_sha1"] = sha1
+    return record, bad_record
+
+
 def _load_split(split: str, streaming: bool) -> Any:
     try:
         return safe_load_dataset(
@@ -153,52 +207,57 @@ def main() -> None:
 
     seen = 0
     bad = 0
+    max_inflight = args.max_inflight or max(1, args.num_workers * 4)
     with raw_path.open("w", encoding="utf-8") as raw_f, bad_path.open(
         "w", encoding="utf-8"
     ) as bad_f:
-        for idx, ex in enumerate(dataset):
-            if args.max_samples is not None and seen >= args.max_samples:
-                break
-            sample_id = str(ex.get("id") or ex.get("sample_id") or ex.get("image_id") or idx)
-            image_obj = ex.get("image") or ex.get("image_data")
-            image_url = ex.get("image_url") or ex.get("url")
-            image, url_candidates = _image_from_any(image_obj)
-            if image_url and _is_url(image_url):
-                url_candidates = [image_url] + url_candidates
-            if isinstance(image_obj, str):
-                url_candidates += _infer_coco_urls(image_obj)
-            if ex.get("image_path"):
-                url_candidates += _infer_coco_urls(str(ex.get("image_path")))
-            # De-duplicate while preserving order.
-            seen_urls = set()
-            url_candidates = [u for u in url_candidates if not (u in seen_urls or seen_urls.add(u))]
-
-            image_path, image_url, sha1 = _save_image(image, url_candidates, image_dir, sample_id)
-            if image_path is None:
-                bad += 1
-                bad_f.write(
-                    json.dumps(
-                        {
-                            "id": sample_id,
-                            "reason": "missing_image",
-                            "image_field": ex.get("image"),
-                            "image_url": image_url,
-                        }
-                    )
-                    + "\n"
-                )
-
-            record: Dict[str, Any] = {}
-            for key, value in ex.items():
-                if key == "image":
-                    continue
-                record[key] = value
-            record["id"] = sample_id
-            record["image_path"] = image_path
-            record["image_url"] = image_url
-            record["image_sha1"] = sha1
-            raw_f.write(json.dumps(record) + "\n")
-            seen += 1
+        if args.num_workers <= 1:
+            for idx, ex in enumerate(dataset):
+                if args.max_samples is not None and seen >= args.max_samples:
+                    break
+                record, bad_record = _process_example(idx, ex, image_dir)
+                if bad_record is not None:
+                    bad += 1
+                    bad_f.write(json.dumps(bad_record) + "\n")
+                raw_f.write(json.dumps(record) + "\n")
+                seen += 1
+                if args.flush_every and seen % args.flush_every == 0:
+                    raw_f.flush()
+                    bad_f.flush()
+                    logger.info("Processed %d samples (bad=%d)", seen, bad)
+        else:
+            futures = set()
+            submitted = 0
+            with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+                for idx, ex in enumerate(dataset):
+                    if args.max_samples is not None and submitted >= args.max_samples:
+                        break
+                    futures.add(executor.submit(_process_example, idx, ex, image_dir))
+                    submitted += 1
+                    if len(futures) >= max_inflight:
+                        done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            record, bad_record = fut.result()
+                            if bad_record is not None:
+                                bad += 1
+                                bad_f.write(json.dumps(bad_record) + "\n")
+                            raw_f.write(json.dumps(record) + "\n")
+                            seen += 1
+                            if args.flush_every and seen % args.flush_every == 0:
+                                raw_f.flush()
+                                bad_f.flush()
+                                logger.info("Processed %d samples (bad=%d)", seen, bad)
+                for fut in as_completed(futures):
+                    record, bad_record = fut.result()
+                    if bad_record is not None:
+                        bad += 1
+                        bad_f.write(json.dumps(bad_record) + "\n")
+                    raw_f.write(json.dumps(record) + "\n")
+                    seen += 1
+                    if args.flush_every and seen % args.flush_every == 0:
+                        raw_f.flush()
+                        bad_f.flush()
+                        logger.info("Processed %d samples (bad=%d)", seen, bad)
 
     logger.info("Wrote raw jsonl: %s (seen=%d, bad=%d)", raw_path, seen, bad)
 
