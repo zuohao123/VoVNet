@@ -20,12 +20,12 @@ policy:
   policy_prior_weight: 0.1
   policy_prior_probs: [0.5, 0.2, 0.3]
   cost_mode: fixed
-  cost_c1: 1.0
-  cost_c2: 1.05
+  cost_c1: 250.0
+  cost_c2: 260.0
   cost_scale: 1.0
   cost_floor_mode: none
   logit_norm: true
-  lambda_cost: 0.01
+  lambda_cost: 0.02
   cost_warmup_steps: 0
   cost_normalize: false
   mixture_branches: NCF_subsample
