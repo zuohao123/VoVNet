@@ -22,6 +22,7 @@ policy:
   cost_mode: fixed
   cost_c1: 1.0
   cost_c2: 1.05
+  cost_scale: 1.0
   cost_floor_mode: none
   logit_norm: true
   lambda_cost: 0.01
